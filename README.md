@@ -11,101 +11,87 @@ from an SPSS `.sav` file containing survey / brand health tracking data (even wi
 
 1. Reads `.sav` with labels and value metadata.
 2. Profiles each column (type guess, unique count, missingness, value labels).
-3. Uses an **agentic mapping step** to map many raw columns to one canonical metric name (for example many brand columns -> `AWARENESS`, `USAGE`, `AFFINITY`).
-4. Builds `master_metadata.json` at the canonical-metric level.
+3. Uses an agentic mapping step to map many raw columns to one canonical metric name.
+4. Builds `master_metadata.json` at canonical-metric level.
 5. Builds `column_mapping.json` at raw-column level.
-6. Detects questionnaire skip logic (`if awareness == 0, then downstream brand questions are null`) and writes `questionnaire_logic.json`.
+6. Detects questionnaire skip logic and writes `questionnaire_logic.json`.
 
-The script works in two modes:
-- **LLM-assisted** (recommended): set `OPENAI_API_KEY`.
-- **Heuristic fallback**: if no API key is provided, it still produces outputs using deterministic rules.
-
-## Install
+## Install (Anaconda recommended)
 
 ```bash
-pip install pyreadstat pandas requests
+conda create -n bht-agentic python=3.11 -y
+conda activate bht-agentic
+pip install pyreadstat pandas requests python-dotenv jupyter
 ```
 
-## 1) How to use your actual `.sav` file
+## Use your `.sav` file
 
-You do **not** upload the file into the script itself. You place the file on disk and pass its path.
-
-### Option A: File is already on your machine/server
-
-Example:
+Place the file in your project, for example:
 
 ```bash
-python bht_agentic_pipeline.py "/absolute/path/to/your_survey_file.sav" --outdir outputs
+./data/your_survey_file.sav
 ```
 
-or from current folder:
+Run:
 
 ```bash
 python bht_agentic_pipeline.py ./data/your_survey_file.sav --outdir outputs
 ```
 
-### Option B: You need to copy file from local laptop to remote Linux server
+## API setup
+
+### OpenAI mode (default)
 
 ```bash
-scp /local/path/your_survey_file.sav user@server:/remote/project/data/
-```
-
-Then SSH and run:
-
-```bash
-python bht_agentic_pipeline.py /remote/project/data/your_survey_file.sav --outdir outputs
-```
-
-### Option C: Notebook/Colab-style upload
-
-Upload the file using the notebook UI, note uploaded path, then run:
-
-```bash
-python bht_agentic_pipeline.py /content/your_survey_file.sav --outdir outputs
-```
-
-## 2) API key and API setup
-
-The script accepts API settings in **two ways**:
-
-- Environment variables (recommended)
-- CLI arguments (`--api-key`, `--model`, `--base-url`)
-
-### A. Environment variables (recommended)
-
-```bash
-export OPENAI_API_KEY="sk-..."
+export OPENAI_API_KEY="..."
 export LLM_MODEL="gpt-4.1-mini"
 export OPENAI_BASE_URL="https://api.openai.com/v1"
 
-python bht_agentic_pipeline.py ./data/your_survey_file.sav --outdir outputs
+python bht_agentic_pipeline.py ./data/your_survey_file.sav --outdir outputs --provider openai
 ```
 
-### B. CLI arguments
+### Azure OpenAI mode
+
+Create `.env` (or `.evn`, both are supported in notebook):
+
+```env
+AZURE_OPENAI_API_KEY=your_azure_openai_key
+AZURE_OPENAI_ENDPOINT=https://your-resource-name.openai.azure.com
+AZURE_OPENAI_DEPLOYMENT=your-chat-deployment-name
+AZURE_OPENAI_API_VERSION=2024-06-01
+```
+
+Then either export them in shell or keep them in `.env` and run from notebook.
+
+CLI example:
 
 ```bash
 python bht_agentic_pipeline.py ./data/your_survey_file.sav \
   --outdir outputs \
-  --api-key "sk-..." \
-  --model "gpt-4.1-mini" \
-  --base-url "https://api.openai.com/v1"
+  --provider azure \
+  --azure-endpoint "https://your-resource-name.openai.azure.com" \
+  --azure-deployment "your-chat-deployment-name" \
+  --azure-api-version "2024-06-01" \
+  --api-key "your_azure_openai_key"
 ```
 
-### OpenAI-compatible providers
+## Notebook usage
 
-If you use an OpenAI-compatible provider, keep the same script and change:
+A ready notebook is included:
 
-- `OPENAI_BASE_URL` to that provider endpoint
-- `OPENAI_API_KEY` to that provider key
-- `LLM_MODEL` to a model name that provider supports
+- `bht_agentic_pipeline_azure.ipynb`
 
-## 3) Quick run checklist
+It shows:
+- loading config from `.env`/`.evn`
+- reading `.sav` with `pyreadstat`
+- running `bht_agentic_pipeline.py` with `--provider azure`
+- verifying generated JSON outputs
 
-1. Install dependencies.
-2. Place `.sav` file in a known path.
-3. Set API vars (optional, for LLM mode).
-4. Run script.
-5. Check generated files in output directory.
+Launch:
+
+```bash
+jupyter notebook bht_agentic_pipeline_azure.ipynb
+```
 
 ## Outputs
 
@@ -115,7 +101,5 @@ If you use an OpenAI-compatible provider, keep the same script and change:
 
 ## Notes
 
-- For very wide surveys, mapping is chunked in batches to keep token usage stable.
-- Canonical names are normalized to uppercase snake case.
-- You can extend canonical hint patterns in `CANONICAL_HINTS` for domain-specific metrics.
-- If API key is missing/invalid, mapping still runs via deterministic heuristics.
+- For very wide surveys, mapping is chunked in batches.
+- If LLM config is missing or API fails, deterministic heuristics are used.

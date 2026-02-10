@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""Build master_metadata.json, column_mapping.json, and questionnaire_logic.json from SPSS (.sav) survey data.
-
-Designed for large BHT-style datasets (1000+ columns) with optional LLM assistance.
-"""
+"""Build master_metadata.json, column_mapping.json, and questionnaire_logic.json from SPSS (.sav) survey data."""
 
 from __future__ import annotations
 
@@ -15,7 +12,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-
 CANONICAL_HINTS = {
     "AWARENESS": [r"\baware", r"awareness", r"know"],
     "USAGE": [r"\buse\b", r"usage", r"used", r"trial"],
@@ -27,12 +23,18 @@ CANONICAL_HINTS = {
 
 @dataclass
 class LLMClient:
-    api_key: Optional[str]
+    provider: str
     model: str
+    api_key: Optional[str] = None
     base_url: str = "https://api.openai.com/v1"
+    azure_endpoint: Optional[str] = None
+    azure_deployment: Optional[str] = None
+    azure_api_version: str = "2024-06-01"
 
     @property
     def enabled(self) -> bool:
+        if self.provider == "azure":
+            return bool(self.api_key and self.azure_endpoint and self.azure_deployment)
         return bool(self.api_key)
 
     def complete_json(self, system: str, user: str) -> Optional[Dict[str, Any]]:
@@ -41,21 +43,37 @@ class LLMClient:
 
         import requests
 
-        url = f"{self.base_url.rstrip('/')}/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "model": self.model,
-            "temperature": 0,
-            "response_format": {"type": "json_object"},
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-        }
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+
         try:
+            if self.provider == "azure":
+                endpoint = self.azure_endpoint.rstrip("/")
+                url = (
+                    f"{endpoint}/openai/deployments/{self.azure_deployment}/chat/completions"
+                    f"?api-version={self.azure_api_version}"
+                )
+                headers = {"api-key": self.api_key, "Content-Type": "application/json"}
+                payload = {
+                    "messages": messages,
+                    "temperature": 0,
+                    "response_format": {"type": "json_object"},
+                }
+            else:
+                url = f"{self.base_url.rstrip('/')}/chat/completions"
+                headers = {
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                }
+                payload = {
+                    "model": self.model,
+                    "messages": messages,
+                    "temperature": 0,
+                    "response_format": {"type": "json_object"},
+                }
+
             resp = requests.post(url, headers=headers, json=payload, timeout=90)
             resp.raise_for_status()
             content = resp.json()["choices"][0]["message"]["content"]
@@ -83,10 +101,7 @@ def infer_type(series) -> Tuple[str, Dict[str, Any]]:
             return "binary", {"allowed": [0, 1]}
         if unique_count <= 7 and set(vals).issubset({1, 2, 3, 4, 5, 6, 7}):
             return "likert", {"allowed": sorted(int(v) for v in vals)}
-        return "numeric", {
-            "min": float(non_null.min()),
-            "max": float(non_null.max()),
-        }
+        return "numeric", {"min": float(non_null.min()), "max": float(non_null.max())}
 
     sample = [str(v) for v in non_null.head(200).tolist()]
     allowed = sorted({str(v) for v in non_null.unique().tolist()})
@@ -164,7 +179,6 @@ def build_master_metadata(df, mapping: Dict[str, str]) -> Dict[str, Any]:
 
 def detect_logic_rules(df, mapping: Dict[str, str], llm: LLMClient) -> Dict[str, Any]:
     rules = []
-
     reverse: Dict[str, List[str]] = {}
     for col, canon in mapping.items():
         reverse.setdefault(canon, []).append(col)
@@ -185,13 +199,12 @@ def detect_logic_rules(df, mapping: Dict[str, str], llm: LLMClient) -> Dict[str,
         if then_null:
             rules.append({"if": {ctrl: 0}, "then_null": sorted(set(then_null))})
 
-    if llm.enabled and len(rules) > 0:
+    if llm.enabled and rules:
         system = (
             "You improve questionnaire skip-logic rules. Keep only strongly supported rules. "
             "Return JSON {'filters':[{'if':{col:value},'then_null':[cols...]}]}"
         )
-        user = json.dumps({"initial_rules": rules})
-        out = llm.complete_json(system, user)
+        out = llm.complete_json(system, json.dumps({"initial_rules": rules}))
         if out and isinstance(out.get("filters"), list):
             rules = out["filters"]
 
@@ -202,13 +215,42 @@ def write_json(path: Path, data: Dict[str, Any]) -> None:
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
+def build_llm_client(args: argparse.Namespace) -> LLMClient:
+    provider = args.provider.lower()
+    if provider == "azure":
+        api_key = args.api_key or os.getenv("AZURE_OPENAI_API_KEY")
+        endpoint = args.azure_endpoint or os.getenv("AZURE_OPENAI_ENDPOINT")
+        deployment = args.azure_deployment or os.getenv("AZURE_OPENAI_DEPLOYMENT")
+        api_version = args.azure_api_version or os.getenv("AZURE_OPENAI_API_VERSION", "2024-06-01")
+        model = args.model or deployment or "azure-deployment"
+        return LLMClient(
+            provider="azure",
+            model=model,
+            api_key=api_key,
+            azure_endpoint=endpoint,
+            azure_deployment=deployment,
+            azure_api_version=api_version,
+        )
+
+    return LLMClient(
+        provider="openai",
+        model=args.model or os.getenv("LLM_MODEL", "gpt-4.1-mini"),
+        api_key=args.api_key or os.getenv("OPENAI_API_KEY"),
+        base_url=args.base_url or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("sav_file", help="Path to SPSS .sav file")
     parser.add_argument("--outdir", default="outputs", help="Output directory")
-    parser.add_argument("--model", default=os.getenv("LLM_MODEL", "gpt-4.1-mini"))
-    parser.add_argument("--api-key", default=os.getenv("OPENAI_API_KEY"))
-    parser.add_argument("--base-url", default=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"))
+    parser.add_argument("--provider", choices=["openai", "azure"], default="openai")
+    parser.add_argument("--model", default=None, help="Model name (OpenAI) or logical label")
+    parser.add_argument("--api-key", default=None, help="API key for OpenAI/Azure")
+    parser.add_argument("--base-url", default=None, help="OpenAI-compatible base URL")
+    parser.add_argument("--azure-endpoint", default=None, help="Azure OpenAI endpoint")
+    parser.add_argument("--azure-deployment", default=None, help="Azure deployment name")
+    parser.add_argument("--azure-api-version", default=None, help="Azure API version")
     args = parser.parse_args()
 
     outdir = Path(args.outdir)
@@ -216,14 +258,11 @@ def main() -> None:
 
     try:
         import pyreadstat  # type: ignore
-    except Exception as exc:  # pragma: no cover
-        raise SystemExit(
-            "pyreadstat is required. Install with: pip install pyreadstat pandas requests"
-        ) from exc
+    except Exception as exc:
+        raise SystemExit("pyreadstat is required. Install with: pip install pyreadstat pandas requests") from exc
 
     df, meta = pyreadstat.read_sav(args.sav_file, apply_value_formats=False)
-
-    llm = LLMClient(api_key=args.api_key, model=args.model, base_url=args.base_url)
+    llm = build_llm_client(args)
 
     profiles = profile_dataframe(df, meta)
     mapping = map_columns_agentic(profiles, llm)
@@ -234,6 +273,7 @@ def main() -> None:
     write_json(outdir / "column_mapping.json", mapping)
     write_json(outdir / "questionnaire_logic.json", logic)
 
+    print(f"Provider: {llm.provider} | LLM enabled: {llm.enabled}")
     print(f"Wrote {outdir / 'master_metadata.json'}")
     print(f"Wrote {outdir / 'column_mapping.json'}")
     print(f"Wrote {outdir / 'questionnaire_logic.json'}")
