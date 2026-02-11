@@ -302,31 +302,85 @@ def enrich_metadata_descriptions(metadata: Dict[str, Any], llm: LLMClient) -> Di
     return metadata
 
 
+def _column_tokens(name: str) -> List[str]:
+    return [t for t in re.split(r"[^A-Za-z0-9]+", str(name).lower()) if t]
+
+
+def _token_overlap(a: str, b: str) -> float:
+    ta = set(_column_tokens(a))
+    tb = set(_column_tokens(b))
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / max(len(ta), len(tb))
+
+
 def detect_logic_rules(df, mapping: Dict[str, str], llm: LLMClient) -> Dict[str, Any]:
-    rules = []
     reverse: Dict[str, List[str]] = {}
     for col, canon in mapping.items():
         reverse.setdefault(canon, []).append(col)
 
     controllers = [c for c in reverse.get("AWARENESS", []) if df[c].dropna().nunique() <= 2]
     followup_canons = [c for c in ["USAGE", "AFFINITY", "UNIQUENESS", "DYNAMISM"] if c in reverse]
+    followup_cols = [col for canon in followup_canons for col in reverse.get(canon, [])]
+
+    # Build controller->followup candidate strengths
+    candidates_by_followup: Dict[str, List[Dict[str, Any]]] = {f: [] for f in followup_cols}
 
     for ctrl in controllers:
-        then_null: List[str] = []
-        for canon in followup_canons:
-            for col in reverse[canon]:
-                ctrl_zero = df[ctrl] == 0
-                if ctrl_zero.sum() == 0:
-                    continue
-                null_rate = float(df.loc[ctrl_zero, col].isna().mean())
-                if null_rate >= 0.9:
-                    then_null.append(col)
-        if then_null:
-            rules.append({"if": {ctrl: 0}, "then_null": sorted(set(then_null))})
+        ctrl_zero = df[ctrl] == 0
+        ctrl_non_zero = df[ctrl] != 0
+
+        trigger_count = int(ctrl_zero.sum())
+        non_trigger_count = int(ctrl_non_zero.sum())
+        if trigger_count == 0 or non_trigger_count == 0:
+            continue
+
+        for follow_col in followup_cols:
+            null_when_zero = float(df.loc[ctrl_zero, follow_col].isna().mean())
+            null_when_not_zero = float(df.loc[ctrl_non_zero, follow_col].isna().mean())
+            lift = null_when_zero - null_when_not_zero
+
+            # Strong evidence only: mostly null when controller=0, and much less null otherwise.
+            if null_when_zero >= 0.9 and lift >= 0.45 and null_when_not_zero <= 0.55:
+                token_bonus = _token_overlap(ctrl, follow_col)
+                score = lift + (0.10 * token_bonus) + min(trigger_count / 5000.0, 0.05)
+                candidates_by_followup[follow_col].append(
+                    {
+                        "controller": ctrl,
+                        "score": score,
+                        "null_when_zero": null_when_zero,
+                        "null_when_not_zero": null_when_not_zero,
+                        "lift": lift,
+                    }
+                )
+
+    # Enforce one-to-one assignment: each follow-up column can map to only one controller.
+    assigned_by_controller: Dict[str, List[str]] = {}
+    for follow_col, options in candidates_by_followup.items():
+        if not options:
+            continue
+        best = sorted(
+            options,
+            key=lambda x: (
+                -x["score"],
+                -x["lift"],
+                -x["null_when_zero"],
+                x["null_when_not_zero"],
+                x["controller"],
+            ),
+        )[0]
+        assigned_by_controller.setdefault(best["controller"], []).append(follow_col)
+
+    rules = [
+        {"if": {ctrl: 0}, "then_null": sorted(cols)}
+        for ctrl, cols in sorted(assigned_by_controller.items())
+        if cols
+    ]
 
     if llm.enabled and rules:
         system = (
             "You improve questionnaire skip-logic rules. Keep only strongly supported rules. "
+            "Do not duplicate follow-up columns across multiple if-conditions. "
             "Return JSON {'filters':[{'if':{col:value},'then_null':[cols...]}]}"
         )
         out = llm.complete_json(system, json.dumps({"initial_rules": rules}))

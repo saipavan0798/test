@@ -104,6 +104,8 @@ jupyter notebook bht_agentic_pipeline_azure.ipynb
 - For very wide surveys, mapping is chunked in batches.
 - If LLM config is missing or API fails, deterministic heuristics are used.
 
+- Skip-logic inference now enforces one-to-one follow-up assignment, so a follow-up column is linked to only one controlling question.
+
 
 ## Mapping & metadata behavior (updated)
 
