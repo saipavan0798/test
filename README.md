@@ -179,3 +179,23 @@ jupyter notebook bht_agentic_pipeline_azure.ipynb
 - Notebook now runs Step 6 and exports:
   - `data/outputs/cleaned_df.xlsx`
   - `data/outputs/audit_log.xlsx`
+
+## Step 7A/7B/7C Agents (Baseline + Current Stats + Drift)
+
+- Added `step7_stats_agent.py` (`StatsAgent`) to compute current numeric/categorical profile stats per mapped column.
+- Added `step7_baseline_stats_agent.py` (`BaselineStatsAgent`) to resolve historical baseline stats from:
+  1) precomputed stats file (JSON/XLSX), or
+  2) baseline dataset (CSV/XLSX) when stats file is unavailable.
+- Added `step7_drift_agent.py` (`DriftAgent`) for drift detection:
+  - numeric: scale change, mean shift, variance shift, PSI distribution shift
+  - categorical: domain drift, category-distribution PSI shift
+- Notebook now exports:
+  - `data/outputs/drift_alerts.xlsx`
+  - `data/outputs/current_stats.json`
+
+## Step 8 Agent (Systemic Intelligence)
+
+- Added `step8_systemic_intelligence_agent.py` (`SystemicIntelligenceAgent`) for executive risk summary generation from systemic column health + drift alerts.
+- Includes deterministic fallback summary when LLM call fails.
+- Notebook now exports:
+  - `data/outputs/systemic_executive_summary.txt`
