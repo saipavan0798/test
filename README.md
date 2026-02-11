@@ -130,3 +130,9 @@ jupyter notebook bht_agentic_pipeline_azure.ipynb
   - `data/outputs/step0_valid_nulls.xlsx`
   - `data/outputs/step0_invalid_missing.xlsx`
   - `data/outputs/step0_uncertain_missing.xlsx`
+
+
+## Step 1 Agent (Row-Level Anomaly Detection)
+
+- Added `step1_row_level_anomaly_detection.py` with row-level checks against metadata + column mapping.
+- Notebook now runs Step 1 and saves: `data/outputs/column_health_report.xlsx`.
