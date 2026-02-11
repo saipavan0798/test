@@ -149,3 +149,10 @@ jupyter notebook bht_agentic_pipeline_azure.ipynb
 - Added `step3_decision_routing.py` to route row anomalies into `llm_queue` and `human_queue`.
 - Routing rule: anomalies from `SYSTEMIC` columns go to human review; others go to LLM queue.
 - Notebook now runs Step 3 immediately after Step 2 and prints both queue sizes.
+
+
+## Step 4 Agent (Rule Engine - Deterministic Auto-Fix)
+
+- Added `step4_rule_engine.py` with deterministic auto-fix policy.
+- Current safe rule: if `metric == AGE` and issue is `OUT_OF_RANGE` (and column is not systemic), recommend `CAP` with high confidence.
+- Notebook now runs Step 4 after routing and exports: `data/outputs/auto_decisions.xlsx`.
