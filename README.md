@@ -142,3 +142,10 @@ jupyter notebook bht_agentic_pipeline_azure.ipynb
 
 - Added `step2_column_health_classification.py` to classify each column as `SYSTEMIC` vs `ROW_LEVEL` from Step 1 anomalies.
 - Notebook now runs Step 2 and saves: `data/outputs/column_health_report.xlsx`.
+
+
+## Step 3 Agent (Decision Routing)
+
+- Added `step3_decision_routing.py` to route row anomalies into `llm_queue` and `human_queue`.
+- Routing rule: anomalies from `SYSTEMIC` columns go to human review; others go to LLM queue.
+- Notebook now runs Step 3 immediately after Step 2 and prints both queue sizes.
