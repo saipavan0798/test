@@ -95,7 +95,7 @@ jupyter notebook bht_agentic_pipeline_azure.ipynb
 
 ## Outputs
 
-- `outputs/master_metadata.json` (now includes `description` per canonical metric; generated via LLM when configured, else deterministic fallback text)
+- `outputs/master_metadata.json` (now includes `description` per canonical metric; generated via LLM when configured, else deterministic 1-2 sentence fallback based on question labels and value labels)
 - `outputs/column_mapping.json`
 - `outputs/questionnaire_logic.json`
 

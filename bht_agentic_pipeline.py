@@ -211,6 +211,14 @@ def build_master_metadata(meta, mapping: Dict[str, str]) -> Dict[str, Any]:
         grouped.setdefault(canon, []).append(col)
 
     value_labels_map = meta.variable_value_labels or {}
+    col_labels: List[Optional[str]] = list(meta.column_labels or [])
+    col_names: List[str] = list(meta.column_names or [])
+    label_lookup: Dict[str, str] = {}
+    for i, col_name in enumerate(col_names):
+        lbl = col_labels[i] if i < len(col_labels) else None
+        if lbl:
+            label_lookup[col_name] = str(lbl)
+
     metadata: Dict[str, Any] = {}
     for canon, cols in grouped.items():
         merged_labels: Dict[Any, Any] = {}
@@ -223,21 +231,53 @@ def build_master_metadata(meta, mapping: Dict[str, str]) -> Dict[str, Any]:
             entry["value_labels"] = {
                 str(k): str(v) for k, v in sorted(merged_labels.items(), key=lambda x: str(x[0]))
             }
+
+        source_labels = [label_lookup.get(c) for c in cols if label_lookup.get(c)]
+        if source_labels:
+            entry["source_question_labels"] = sorted(set(source_labels))[:8]
+
         metadata[canon] = entry
     return metadata
 
 
 
+def _join_examples(items: List[str], limit: int = 4) -> str:
+    clean = [i for i in items if i]
+    if not clean:
+        return ""
+    show = clean[:limit]
+    suffix = "" if len(clean) <= limit else ", ..."
+    return ", ".join(show) + suffix
 
-def default_description(metric_name: str) -> str:
-    pretty = metric_name.replace("_", " ").strip().title()
-    return f"Survey metric capturing {pretty}."
+
+def default_description(metric_name: str, entry: Dict[str, Any]) -> str:
+    pretty = metric_name.replace("_", " ").strip()
+    mtype = entry.get("type") or "survey"
+    value_labels = entry.get("value_labels") or {}
+    source_labels = entry.get("source_question_labels") or []
+
+    if source_labels:
+        first = f"This metric represents responses to question(s) such as {_join_examples([str(x) for x in source_labels], limit=2)}."
+    else:
+        first = f"This metric captures {pretty.lower()} in the survey dataset."
+
+    if value_labels:
+        label_examples = [f"{k}={v}" for k, v in list(value_labels.items())[:4]]
+        second = f"Values are coded as {mtype} categories, for example {_join_examples(label_examples, limit=4)}."
+    elif entry.get("allowed"):
+        allowed_preview = _join_examples([str(x) for x in entry.get("allowed", [])], limit=6)
+        second = f"Allowed response codes include {allowed_preview}."
+    else:
+        second = f"It is represented as a {mtype} field."
+
+    return f"{first} {second}"
 
 
 def enrich_metadata_descriptions(metadata: Dict[str, Any], llm: LLMClient) -> Dict[str, Any]:
     system = (
-        "You write concise survey metadata descriptions. "
-        "Return strict JSON: {'description': '...'} in one sentence."
+        "You write informative survey metadata descriptions. "
+        "Return strict JSON: {'description': '...'} with 1-2 sentences. "
+        "Do not repeat the key verbatim; explain what it measures and how values are coded when labels are available."
     )
 
     for metric_name, entry in metadata.items():
@@ -246,6 +286,7 @@ def enrich_metadata_descriptions(metadata: Dict[str, Any], llm: LLMClient) -> Di
             "type": entry.get("type"),
             "allowed": entry.get("allowed"),
             "value_labels": entry.get("value_labels"),
+            "source_question_labels": entry.get("source_question_labels", []),
         }
 
         description = None
@@ -253,12 +294,13 @@ def enrich_metadata_descriptions(metadata: Dict[str, Any], llm: LLMClient) -> Di
             out = llm.complete_json(system, json.dumps(context))
             if out and isinstance(out.get("description"), str):
                 candidate = out["description"].strip()
-                if candidate:
+                if candidate and len(candidate.split()) >= 8:
                     description = candidate
 
-        entry["description"] = description or default_description(metric_name)
+        entry["description"] = description or default_description(metric_name, entry)
 
     return metadata
+
 
 def detect_logic_rules(df, mapping: Dict[str, str], llm: LLMClient) -> Dict[str, Any]:
     rules = []
