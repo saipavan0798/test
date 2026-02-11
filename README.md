@@ -170,3 +170,12 @@ jupyter notebook bht_agentic_pipeline_azure.ipynb
 - Clusters uncertain missing cases by `column` and makes one LLM call per column pattern.
 - Allowed actions are constrained to `VALID_NULL`, `IMPUTE`, or `NO_ACTION`.
 - Notebook now runs Step 5B on `uncertain_missing` and exports: `data/outputs/missing_llm_decisions.xlsx`.
+
+## Step 6 Agent (Execution - Single Control Point)
+
+- Added `step6_execution_agent.py` (`ExecutionAgentV2`) as the governed execution layer.
+- Executes only structured actions from Step 4/5A decisions and Step 5B missing-value decisions.
+- Auto-executes actions only when confidence is above threshold; otherwise routes to `HUMAN_REVIEW` in audit.
+- Notebook now runs Step 6 and exports:
+  - `data/outputs/cleaned_df.xlsx`
+  - `data/outputs/audit_log.xlsx`
