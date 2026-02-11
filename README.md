@@ -156,3 +156,10 @@ jupyter notebook bht_agentic_pipeline_azure.ipynb
 - Added `step4_rule_engine.py` with deterministic auto-fix policy.
 - Current safe rule: if `metric == AGE` and issue is `OUT_OF_RANGE` (and column is not systemic), recommend `CAP` with high confidence.
 - Notebook now runs Step 4 after routing and exports: `data/outputs/auto_decisions.xlsx`.
+
+
+## Step 5A Agent (LLM Policy Decisions - Clustered)
+
+- Added `step5a_llm_policy_decision.py` (`DecisionAgentV2`) for cluster-level LLM policy reasoning.
+- Clusters anomalies by `(metric, issue_type)` and makes one LLM call per cluster (not per row).
+- Notebook now runs Step 5A on `remaining_for_llm` and exports: `data/outputs/llm_decisions.xlsx`.
