@@ -4,6 +4,7 @@ Python pipeline to generate:
 - `master_metadata.json`
 - `column_mapping.json`
 - `questionnaire_logic.json`
+- `variable_labels.json`
 
 from an SPSS `.sav` file containing survey / brand health tracking data (even with 1000+ columns).
 
@@ -15,6 +16,7 @@ from an SPSS `.sav` file containing survey / brand health tracking data (even wi
 4. Builds `master_metadata.json` at canonical-metric level.
 5. Builds `column_mapping.json` at raw-column level.
 6. Detects questionnaire skip logic and writes `questionnaire_logic.json`.
+7. Creates `variable_labels.json` with standardized human-readable labels per source column.
 
 ## Install (Anaconda recommended)
 
@@ -98,6 +100,7 @@ jupyter notebook bht_agentic_pipeline_azure.ipynb
 - `outputs/master_metadata.json` (now includes `description` per canonical metric; generated via LLM when configured, else deterministic 1-2 sentence fallback based on question labels and value labels)
 - `outputs/column_mapping.json`
 - `outputs/questionnaire_logic.json`
+- `outputs/variable_labels.json`
 
 ## Notes
 
@@ -115,3 +118,6 @@ jupyter notebook bht_agentic_pipeline_azure.ipynb
 - The pipeline prioritizes SPSS `value_labels` for metadata definitions.
 - `master_metadata.json` now uses `value_labels` as the source for `allowed` values and labels, instead of computing min/max from observed data.
 - This makes metadata deterministic and questionnaire/codebook-aligned.
+
+
+- Variable labels prefer SPSS `column_labels`; if missing, a standardized fallback label is generated from column structure and canonical mapping.

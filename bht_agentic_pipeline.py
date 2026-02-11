@@ -465,6 +465,68 @@ def detect_logic_rules(df, mapping: Dict[str, str], meta, llm: LLMClient) -> Dic
     return {"filters": filters}
 
 
+def _titleize_token(token: str) -> str:
+    if not token:
+        return ""
+    if any(ch.islower() for ch in token[1:]) and any(ch.isupper() for ch in token):
+        return token
+    if token.isupper() and len(token) <= 4:
+        return token
+    return token[0].upper() + token[1:].lower()
+
+
+def _fallback_variable_label(column: str, canonical_metric: Optional[str]) -> str:
+    parts = [p for p in re.split(r"[_#\s]+", str(column)) if p]
+    if not parts:
+        return "Survey Variable"
+
+    if canonical_metric and len(parts) >= 2:
+        brand_or_subject = _titleize_token(parts[0])
+        metric_part = canonical_metric.replace("_", " ").title()
+        return f"{brand_or_subject} Brand {metric_part}"
+
+    return " ".join(_titleize_token(p) for p in parts)
+
+
+def build_variable_labels(df, meta, mapping: Dict[str, str], llm: LLMClient) -> Dict[str, str]:
+    labels: Dict[str, str] = {}
+
+    cols = list(df.columns)
+    meta_labels = list(meta.column_labels or [])
+    has_meta_label: Dict[str, bool] = {}
+
+    for i, col in enumerate(cols):
+        val = meta_labels[i] if i < len(meta_labels) else None
+        if val:
+            labels[col] = str(val).strip()
+            has_meta_label[col] = True
+        else:
+            has_meta_label[col] = False
+
+    for col in cols:
+        if not labels.get(col):
+            labels[col] = _fallback_variable_label(col, mapping.get(col))
+
+    if llm.enabled:
+        system = (
+            "You generate concise standardized variable labels for survey columns. "
+            "Return strict JSON {'label':'...'} with 2-6 words."
+        )
+        for col in cols:
+            if has_meta_label.get(col):
+                continue
+            context = {
+                "column": col,
+                "canonical_metric": mapping.get(col),
+                "fallback_label": labels[col],
+            }
+            out = llm.complete_json(system, json.dumps(context))
+            if out and isinstance(out.get("label"), str) and out["label"].strip():
+                labels[col] = out["label"].strip()
+
+    return labels
+
+
 def write_json(path: Path, data: Dict[str, Any]) -> None:
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
@@ -523,15 +585,18 @@ def main() -> None:
     master_metadata = build_master_metadata(meta, mapping)
     master_metadata = enrich_metadata_descriptions(master_metadata, llm)
     logic = detect_logic_rules(df, mapping, meta, llm)
+    variable_labels = build_variable_labels(df, meta, mapping, llm)
 
     write_json(outdir / "master_metadata.json", master_metadata)
     write_json(outdir / "column_mapping.json", mapping)
     write_json(outdir / "questionnaire_logic.json", logic)
+    write_json(outdir / "variable_labels.json", variable_labels)
 
     print(f"Provider: {llm.provider} | LLM enabled: {llm.enabled}")
     print(f"Wrote {outdir / 'master_metadata.json'}")
     print(f"Wrote {outdir / 'column_mapping.json'}")
     print(f"Wrote {outdir / 'questionnaire_logic.json'}")
+    print(f"Wrote {outdir / 'variable_labels.json'}")
 
 
 if __name__ == "__main__":
