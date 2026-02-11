@@ -163,3 +163,10 @@ jupyter notebook bht_agentic_pipeline_azure.ipynb
 - Added `step5a_llm_policy_decision.py` (`DecisionAgentV2`) for cluster-level LLM policy reasoning.
 - Clusters anomalies by `(metric, issue_type)` and makes one LLM call per cluster (not per row).
 - Notebook now runs Step 5A on `remaining_for_llm` and exports: `data/outputs/llm_decisions.xlsx`.
+
+## Step 5B Agent (Missing Value LLM - Uncertain Cases Only)
+
+- Added `step5b_missing_value_llm.py` (`MissingValueLLMAgentV2`) for uncertain missing-value cases from Step 0.
+- Clusters uncertain missing cases by `column` and makes one LLM call per column pattern.
+- Allowed actions are constrained to `VALID_NULL`, `IMPUTE`, or `NO_ACTION`.
+- Notebook now runs Step 5B on `uncertain_missing` and exports: `data/outputs/missing_llm_decisions.xlsx`.
