@@ -302,6 +302,55 @@ def enrich_metadata_descriptions(metadata: Dict[str, Any], llm: LLMClient) -> Di
     return metadata
 
 
+def _normalize_text(text: str) -> str:
+    t = str(text).strip().lower()
+    t = t.replace("’", "'")
+    t = re.sub(r"\s+", " ", t)
+    return t
+
+
+def _is_negative_label(label: str) -> bool:
+    t = _normalize_text(label)
+    negative_terms = [
+        "no",
+        "not aware",
+        "don't know",
+        "dont know",
+        "do not know",
+        "dk",
+        "refused",
+        "none",
+        "not used",
+        "never",
+    ]
+    return any(term in t for term in negative_terms)
+
+
+def _controller_trigger_values(controller: str, meta) -> List[Any]:
+    value_labels = (meta.variable_value_labels or {}).get(controller, {})
+    if not value_labels:
+        return [0]
+
+    triggers: List[Any] = []
+    for code, label in value_labels.items():
+        if _is_negative_label(str(label)):
+            triggers.append(code)
+
+    # fallback to 0 only when present in labels
+    if not triggers and any(str(k) in {"0", "0.0"} for k in value_labels.keys()):
+        triggers.append(0)
+
+    # Deduplicate while preserving order
+    seen = set()
+    unique = []
+    for t in triggers:
+        key = str(t)
+        if key not in seen:
+            seen.add(key)
+            unique.append(t)
+    return unique
+
+
 def _column_tokens(name: str) -> List[str]:
     return [t for t in re.split(r"[^A-Za-z0-9]+", str(name).lower()) if t]
 
@@ -314,80 +363,106 @@ def _token_overlap(a: str, b: str) -> float:
     return len(ta & tb) / max(len(ta), len(tb))
 
 
-def detect_logic_rules(df, mapping: Dict[str, str], llm: LLMClient) -> Dict[str, Any]:
+def detect_logic_rules(df, mapping: Dict[str, str], meta, llm: LLMClient) -> Dict[str, Any]:
     reverse: Dict[str, List[str]] = {}
     for col, canon in mapping.items():
         reverse.setdefault(canon, []).append(col)
 
-    controllers = [c for c in reverse.get("AWARENESS", []) if df[c].dropna().nunique() <= 2]
+    controllers = [c for c in reverse.get("AWARENESS", []) if df[c].dropna().nunique() <= 6]
     followup_canons = [c for c in ["USAGE", "AFFINITY", "UNIQUENESS", "DYNAMISM"] if c in reverse]
     followup_cols = [col for canon in followup_canons for col in reverse.get(canon, [])]
 
-    # Build controller->followup candidate strengths
     candidates_by_followup: Dict[str, List[Dict[str, Any]]] = {f: [] for f in followup_cols}
 
     for ctrl in controllers:
-        ctrl_zero = df[ctrl] == 0
-        ctrl_non_zero = df[ctrl] != 0
+        trigger_values = _controller_trigger_values(ctrl, meta)
+        if not trigger_values:
+            continue
 
-        trigger_count = int(ctrl_zero.sum())
-        non_trigger_count = int(ctrl_non_zero.sum())
-        if trigger_count == 0 or non_trigger_count == 0:
+        ctrl_series = df[ctrl]
+        trigger_mask = ctrl_series.isin(trigger_values)
+        non_trigger_mask = (~trigger_mask) & ctrl_series.notna()
+
+        trigger_count = int(trigger_mask.sum())
+        non_trigger_count = int(non_trigger_mask.sum())
+        if trigger_count < 30 or non_trigger_count < 30:
             continue
 
         for follow_col in followup_cols:
-            null_when_zero = float(df.loc[ctrl_zero, follow_col].isna().mean())
-            null_when_not_zero = float(df.loc[ctrl_non_zero, follow_col].isna().mean())
-            lift = null_when_zero - null_when_not_zero
+            null_when_trigger = float(df.loc[trigger_mask, follow_col].isna().mean())
+            null_when_non_trigger = float(df.loc[non_trigger_mask, follow_col].isna().mean())
+            lift = null_when_trigger - null_when_non_trigger
 
-            # Strong evidence only: mostly null when controller=0, and much less null otherwise.
-            if null_when_zero >= 0.9 and lift >= 0.45 and null_when_not_zero <= 0.55:
+            if null_when_trigger >= 0.92 and lift >= 0.60 and null_when_non_trigger <= 0.35:
                 token_bonus = _token_overlap(ctrl, follow_col)
-                score = lift + (0.10 * token_bonus) + min(trigger_count / 5000.0, 0.05)
+                score = lift + (0.08 * token_bonus)
                 candidates_by_followup[follow_col].append(
                     {
                         "controller": ctrl,
+                        "trigger_values": [str(v) for v in trigger_values],
                         "score": score,
-                        "null_when_zero": null_when_zero,
-                        "null_when_not_zero": null_when_not_zero,
                         "lift": lift,
+                        "null_when_trigger": null_when_trigger,
+                        "null_when_non_trigger": null_when_non_trigger,
                     }
                 )
 
-    # Enforce one-to-one assignment: each follow-up column can map to only one controller.
-    assigned_by_controller: Dict[str, List[str]] = {}
+    assigned: List[Dict[str, Any]] = []
     for follow_col, options in candidates_by_followup.items():
         if not options:
             continue
-        best = sorted(
+
+        ranked = sorted(
             options,
             key=lambda x: (
                 -x["score"],
                 -x["lift"],
-                -x["null_when_zero"],
-                x["null_when_not_zero"],
+                -x["null_when_trigger"],
+                x["null_when_non_trigger"],
                 x["controller"],
             ),
-        )[0]
-        assigned_by_controller.setdefault(best["controller"], []).append(follow_col)
+        )
+        best = ranked[0]
+        second_score = ranked[1]["score"] if len(ranked) > 1 else None
 
-    rules = [
-        {"if": {ctrl: 0}, "then_null": sorted(cols)}
-        for ctrl, cols in sorted(assigned_by_controller.items())
-        if cols
-    ]
+        # High confidence guard: keep only clear winners.
+        if second_score is not None and (best["score"] - second_score) < 0.08:
+            continue
 
-    if llm.enabled and rules:
+        assigned.append({"follow_col": follow_col, **best})
+
+    # Group by (controller, trigger_values) while keeping one-to-one follow-up assignment.
+    grouped: Dict[Tuple[str, str], List[str]] = {}
+    for row in assigned:
+        key = (row["controller"], "|".join(row["trigger_values"]))
+        grouped.setdefault(key, []).append(row["follow_col"])
+
+    filters: List[Dict[str, Any]] = []
+    for (ctrl, trigger_key), cols in sorted(grouped.items()):
+        trigger_vals = trigger_key.split("|") if trigger_key else []
+        if len(cols) == 0:
+            continue
+        if len(trigger_vals) == 1:
+            if_value: Any = trigger_vals[0]
+        else:
+            if_value = {"in": trigger_vals}
+        filters.append({"if": {ctrl: if_value}, "then_null": sorted(cols)})
+
+    # If we are not confident, return blank logic as requested.
+    if len(filters) == 0:
+        return {"filters": []}
+
+    if llm.enabled:
         system = (
-            "You improve questionnaire skip-logic rules. Keep only strongly supported rules. "
-            "Do not duplicate follow-up columns across multiple if-conditions. "
+            "You validate high-confidence skip-logic rules. "
+            "Do not add new rules. Do not duplicate follow-up columns across if-conditions. "
             "Return JSON {'filters':[{'if':{col:value},'then_null':[cols...]}]}"
         )
-        out = llm.complete_json(system, json.dumps({"initial_rules": rules}))
+        out = llm.complete_json(system, json.dumps({"initial_rules": filters}))
         if out and isinstance(out.get("filters"), list):
-            rules = out["filters"]
+            filters = out["filters"]
 
-    return {"filters": rules}
+    return {"filters": filters}
 
 
 def write_json(path: Path, data: Dict[str, Any]) -> None:
@@ -447,7 +522,7 @@ def main() -> None:
     mapping = map_columns_agentic(profiles, llm)
     master_metadata = build_master_metadata(meta, mapping)
     master_metadata = enrich_metadata_descriptions(master_metadata, llm)
-    logic = detect_logic_rules(df, mapping, llm)
+    logic = detect_logic_rules(df, mapping, meta, llm)
 
     write_json(outdir / "master_metadata.json", master_metadata)
     write_json(outdir / "column_mapping.json", mapping)

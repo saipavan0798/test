@@ -105,6 +105,8 @@ jupyter notebook bht_agentic_pipeline_azure.ipynb
 - If LLM config is missing or API fails, deterministic heuristics are used.
 
 - Skip-logic inference now enforces one-to-one follow-up assignment, so a follow-up column is linked to only one controlling question.
+- Skip-logic trigger values are inferred from SPSS value-label meanings (e.g., No / Don't know / Refused), not only numeric `0`.
+- If high-confidence controller→follow-up evidence is not found, questionnaire logic is intentionally returned as blank (`filters: []`).
 
 
 ## Mapping & metadata behavior (updated)
