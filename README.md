@@ -121,3 +121,12 @@ jupyter notebook bht_agentic_pipeline_azure.ipynb
 
 
 - Variable labels prefer SPSS `column_labels`; if missing, a standardized fallback label is generated from column structure and canonical mapping.
+
+
+## Step 0 Agent (Missing Value Intelligence)
+
+- Added `step0_missing_value_intelligence.py` with your Step 0 flow (questionnaire logic + group-scoped statistical inference).
+- Notebook now runs Step 0 after pipeline generation and saves:
+  - `data/outputs/step0_valid_nulls.xlsx`
+  - `data/outputs/step0_invalid_missing.xlsx`
+  - `data/outputs/step0_uncertain_missing.xlsx`
