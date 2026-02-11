@@ -125,7 +125,7 @@ jupyter notebook bht_agentic_pipeline_azure.ipynb
 
 ## Step 0 Agent (Missing Value Intelligence)
 
-- Added `step0_missing_value_intelligence.py` with your Step 0 flow (questionnaire logic + group-scoped statistical inference).
+- Added `agent/step0_missing_value_intelligence.py` with your Step 0 flow (questionnaire logic + group-scoped statistical inference).
 - Notebook now runs Step 0 after pipeline generation and saves:
   - `data/outputs/step0_valid_nulls.xlsx`
   - `data/outputs/step0_invalid_missing.xlsx`
@@ -134,46 +134,46 @@ jupyter notebook bht_agentic_pipeline_azure.ipynb
 
 ## Step 1 Agent (Row-Level Anomaly Detection)
 
-- Added `step1_row_level_anomaly_detection.py` with row-level checks against metadata + column mapping.
+- Added `agent/step1_row_level_anomaly_detection.py` with row-level checks against metadata + column mapping.
 - Notebook now runs Step 1 and keeps `anomalies` in-memory for Step 2 (no file output at Step 1).
 
 
 ## Step 2 Agent (Column Health Classification)
 
-- Added `step2_column_health_classification.py` to classify each column as `SYSTEMIC` vs `ROW_LEVEL` from Step 1 anomalies.
+- Added `agent/step2_column_health_classification.py` to classify each column as `SYSTEMIC` vs `ROW_LEVEL` from Step 1 anomalies.
 - Notebook now runs Step 2 and saves: `data/outputs/column_health_report.xlsx`.
 
 
 ## Step 3 Agent (Decision Routing)
 
-- Added `step3_decision_routing.py` to route row anomalies into `llm_queue` and `human_queue`.
+- Added `agent/step3_decision_routing.py` to route row anomalies into `llm_queue` and `human_queue`.
 - Routing rule: anomalies from `SYSTEMIC` columns go to human review; others go to LLM queue.
 - Notebook now runs Step 3 immediately after Step 2 and prints both queue sizes.
 
 
 ## Step 4 Agent (Rule Engine - Deterministic Auto-Fix)
 
-- Added `step4_rule_engine.py` with deterministic auto-fix policy.
+- Added `agent/step4_rule_engine.py` with deterministic auto-fix policy.
 - Current safe rule: if `metric == AGE` and issue is `OUT_OF_RANGE` (and column is not systemic), recommend `CAP` with high confidence.
 - Notebook now runs Step 4 after routing and exports: `data/outputs/auto_decisions.xlsx`.
 
 
 ## Step 5A Agent (LLM Policy Decisions - Clustered)
 
-- Added `step5a_llm_policy_decision.py` (`DecisionAgentV2`) for cluster-level LLM policy reasoning.
+- Added `agent/step5a_llm_policy_decision.py` (`DecisionAgentV2`) for cluster-level LLM policy reasoning.
 - Clusters anomalies by `(metric, issue_type)` and makes one LLM call per cluster (not per row).
 - Notebook now runs Step 5A on `remaining_for_llm` and exports: `data/outputs/llm_decisions.xlsx`.
 
 ## Step 5B Agent (Missing Value LLM - Uncertain Cases Only)
 
-- Added `step5b_missing_value_llm.py` (`MissingValueLLMAgentV2`) for uncertain missing-value cases from Step 0.
+- Added `agent/step5b_missing_value_llm.py` (`MissingValueLLMAgentV2`) for uncertain missing-value cases from Step 0.
 - Clusters uncertain missing cases by `column` and makes one LLM call per column pattern.
 - Allowed actions are constrained to `VALID_NULL`, `IMPUTE`, or `NO_ACTION`.
 - Notebook now runs Step 5B on `uncertain_missing` and exports: `data/outputs/missing_llm_decisions.xlsx`.
 
 ## Step 6 Agent (Execution - Single Control Point)
 
-- Added `step6_execution_agent.py` (`ExecutionAgentV2`) as the governed execution layer.
+- Added `agent/step6_execution_agent.py` (`ExecutionAgentV2`) as the governed execution layer.
 - Executes only structured actions from Step 4/5A decisions and Step 5B missing-value decisions.
 - Auto-executes actions only when confidence is above threshold; otherwise routes to `HUMAN_REVIEW` in audit.
 - Notebook now runs Step 6 and exports:
@@ -182,11 +182,11 @@ jupyter notebook bht_agentic_pipeline_azure.ipynb
 
 ## Step 7A/7B/7C Agents (Baseline + Current Stats + Drift)
 
-- Added `step7_stats_agent.py` (`StatsAgent`) to compute current numeric/categorical profile stats per mapped column.
-- Added `step7_baseline_stats_agent.py` (`BaselineStatsAgent`) to resolve historical baseline stats from:
+- Added `agent/step7_stats_agent.py` (`StatsAgent`) to compute current numeric/categorical profile stats per mapped column.
+- Added `agent/step7_baseline_stats_agent.py` (`BaselineStatsAgent`) to resolve historical baseline stats from:
   1) precomputed stats file (JSON/XLSX), or
   2) baseline dataset (CSV/XLSX) when stats file is unavailable.
-- Added `step7_drift_agent.py` (`DriftAgent`) for drift detection:
+- Added `agent/step7_drift_agent.py` (`DriftAgent`) for drift detection:
   - numeric: scale change, mean shift, variance shift, PSI distribution shift
   - categorical: domain drift, category-distribution PSI shift
 - Notebook now exports:
@@ -195,7 +195,7 @@ jupyter notebook bht_agentic_pipeline_azure.ipynb
 
 ## Step 8 Agent (Systemic Intelligence)
 
-- Added `step8_systemic_intelligence_agent.py` (`SystemicIntelligenceAgent`) for executive risk summary generation from systemic column health + drift alerts.
+- Added `agent/step8_systemic_intelligence_agent.py` (`SystemicIntelligenceAgent`) for executive risk summary generation from systemic column health + drift alerts.
 - Includes deterministic fallback summary when LLM call fails.
 - Notebook now exports:
   - `data/outputs/systemic_executive_summary.txt`
