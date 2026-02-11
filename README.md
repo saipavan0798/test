@@ -110,6 +110,7 @@ jupyter notebook bht_agentic_pipeline_azure.ipynb
 - Skip-logic inference now enforces one-to-one follow-up assignment, so a follow-up column is linked to only one controlling question.
 - Skip-logic trigger values are inferred from SPSS value-label meanings (e.g., No / Don't know / Refused), not only numeric `0`.
 - If high-confidence controller→follow-up evidence is not found, questionnaire logic is intentionally returned as blank (`filters: []`).
+- When LLM is enabled, questionnaire refinement now receives up to 50 sampled rows plus candidate controller/follow-up evidence and value-label context to improve funnel accuracy while preserving one-to-one follow-up assignment.
 
 
 ## Mapping & metadata behavior (updated)

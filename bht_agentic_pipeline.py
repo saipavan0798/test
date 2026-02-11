@@ -363,17 +363,42 @@ def _token_overlap(a: str, b: str) -> float:
     return len(ta & tb) / max(len(ta), len(tb))
 
 
-def detect_logic_rules(df, mapping: Dict[str, str], meta, llm: LLMClient) -> Dict[str, Any]:
+def _sample_rows_for_llm(df, max_rows: int = 50) -> List[Dict[str, Any]]:
+    if len(df) == 0:
+        return []
+    n = min(max_rows, len(df))
+    sampled = df.sample(n=n, random_state=42) if len(df) > n else df
+    sampled = sampled.where(sampled.notna(), None)
+    return sampled.to_dict(orient="records")
+
+
+def _decode_value_label_dict(meta, col: str) -> Dict[str, str]:
+    labels = (meta.variable_value_labels or {}).get(col, {})
+    return {str(k): str(v) for k, v in labels.items()}
+
+
+def _build_questionnaire_candidates(df, mapping: Dict[str, str], meta) -> List[Dict[str, Any]]:
+    """Build statistically strong controller->follow-up candidates across full column space."""
     reverse: Dict[str, List[str]] = {}
     for col, canon in mapping.items():
         reverse.setdefault(canon, []).append(col)
 
-    controllers = [c for c in reverse.get("AWARENESS", []) if df[c].dropna().nunique() <= 6]
-    followup_canons = [c for c in ["USAGE", "AFFINITY", "UNIQUENESS", "DYNAMISM"] if c in reverse]
-    followup_cols = [col for canon in followup_canons for col in reverse.get(canon, [])]
+    # Keep awareness as preferred controllers, but broaden to low-cardinality question columns.
+    awareness_controllers = reverse.get("AWARENESS", [])
+    generic_controllers = [
+        c
+        for c in df.columns
+        if c in mapping and df[c].dropna().nunique() <= 12 and len((meta.variable_value_labels or {}).get(c, {})) >= 2
+    ]
+    controllers = list(dict.fromkeys(awareness_controllers + generic_controllers))
 
-    candidates_by_followup: Dict[str, List[Dict[str, Any]]] = {f: [] for f in followup_cols}
+    followup_cols = [
+        c
+        for c in df.columns
+        if c in mapping and c not in controllers and 0.05 <= float(df[c].isna().mean()) <= 0.98
+    ]
 
+    candidates: List[Dict[str, Any]] = []
     for ctrl in controllers:
         trigger_values = _controller_trigger_values(ctrl, meta)
         if not trigger_values:
@@ -385,33 +410,44 @@ def detect_logic_rules(df, mapping: Dict[str, str], meta, llm: LLMClient) -> Dic
 
         trigger_count = int(trigger_mask.sum())
         non_trigger_count = int(non_trigger_mask.sum())
-        if trigger_count < 30 or non_trigger_count < 30:
+        if trigger_count < 15 or non_trigger_count < 15:
             continue
 
         for follow_col in followup_cols:
+            token_overlap = _token_overlap(ctrl, follow_col)
+            if token_overlap <= 0 and extract_series_stem(ctrl) != extract_series_stem(follow_col):
+                continue
+
             null_when_trigger = float(df.loc[trigger_mask, follow_col].isna().mean())
             null_when_non_trigger = float(df.loc[non_trigger_mask, follow_col].isna().mean())
             lift = null_when_trigger - null_when_non_trigger
 
-            if null_when_trigger >= 0.92 and lift >= 0.60 and null_when_non_trigger <= 0.35:
-                token_bonus = _token_overlap(ctrl, follow_col)
-                score = lift + (0.08 * token_bonus)
-                candidates_by_followup[follow_col].append(
+            # strong but not too strict to avoid missing real skip-logic
+            if null_when_trigger >= 0.85 and lift >= 0.45 and null_when_non_trigger <= 0.50:
+                score = lift + (0.10 * token_overlap)
+                candidates.append(
                     {
                         "controller": ctrl,
+                        "follow_col": follow_col,
                         "trigger_values": [str(v) for v in trigger_values],
                         "score": score,
                         "lift": lift,
                         "null_when_trigger": null_when_trigger,
                         "null_when_non_trigger": null_when_non_trigger,
+                        "token_overlap": token_overlap,
                     }
                 )
+    return candidates
+
+
+def _finalize_filters_from_candidates(candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    # one-to-one follow-up assignment
+    by_follow: Dict[str, List[Dict[str, Any]]] = {}
+    for row in candidates:
+        by_follow.setdefault(row["follow_col"], []).append(row)
 
     assigned: List[Dict[str, Any]] = []
-    for follow_col, options in candidates_by_followup.items():
-        if not options:
-            continue
-
+    for follow_col, options in by_follow.items():
         ranked = sorted(
             options,
             key=lambda x: (
@@ -424,14 +460,10 @@ def detect_logic_rules(df, mapping: Dict[str, str], meta, llm: LLMClient) -> Dic
         )
         best = ranked[0]
         second_score = ranked[1]["score"] if len(ranked) > 1 else None
-
-        # High confidence guard: keep only clear winners.
         if second_score is not None and (best["score"] - second_score) < 0.08:
             continue
+        assigned.append(best)
 
-        assigned.append({"follow_col": follow_col, **best})
-
-    # Group by (controller, trigger_values) while keeping one-to-one follow-up assignment.
     grouped: Dict[Tuple[str, str], List[str]] = {}
     for row in assigned:
         key = (row["controller"], "|".join(row["trigger_values"]))
@@ -440,13 +472,19 @@ def detect_logic_rules(df, mapping: Dict[str, str], meta, llm: LLMClient) -> Dic
     filters: List[Dict[str, Any]] = []
     for (ctrl, trigger_key), cols in sorted(grouped.items()):
         trigger_vals = trigger_key.split("|") if trigger_key else []
-        if len(cols) == 0:
+        if not cols:
             continue
         if len(trigger_vals) == 1:
             if_value: Any = trigger_vals[0]
         else:
             if_value = {"in": trigger_vals}
         filters.append({"if": {ctrl: if_value}, "then_null": sorted(cols)})
+    return filters
+
+
+def detect_logic_rules(df, mapping: Dict[str, str], meta, llm: LLMClient) -> Dict[str, Any]:
+    candidates = _build_questionnaire_candidates(df, mapping, meta)
+    filters = _finalize_filters_from_candidates(candidates)
 
     # If we are not confident, return blank logic as requested.
     if len(filters) == 0:
@@ -454,11 +492,41 @@ def detect_logic_rules(df, mapping: Dict[str, str], meta, llm: LLMClient) -> Dic
 
     if llm.enabled:
         system = (
-            "You validate high-confidence skip-logic rules. "
-            "Do not add new rules. Do not duplicate follow-up columns across if-conditions. "
+            "You validate and improve high-confidence survey skip-logic funnels. "
+            "Use candidate evidence plus sampled rows. "
+            "One follow-up column must map to only one controller condition. "
+            "Keep only highly defensible rules. "
             "Return JSON {'filters':[{'if':{col:value},'then_null':[cols...]}]}"
         )
-        out = llm.complete_json(system, json.dumps({"initial_rules": filters}))
+        candidate_preview = sorted(candidates, key=lambda x: x.get("score", 0), reverse=True)[:400]
+        cols_for_labels = {
+            c.get("controller") for c in candidate_preview if c.get("controller")
+        } | {
+            c.get("follow_col") for c in candidate_preview if c.get("follow_col")
+        }
+        label_context = {
+            col: {
+                "question_label": (getattr(meta, "column_names_to_labels", {}) or {}).get(col),
+                "value_labels": _decode_value_label_dict(meta, col),
+            }
+            for col in sorted(cols_for_labels)
+        }
+        sampled_rows = _sample_rows_for_llm(df, max_rows=50)
+        out = llm.complete_json(
+            system,
+            json.dumps(
+                {
+                    "initial_rules": filters,
+                    "candidate_pairs": candidate_preview,
+                    "sample_rows": sampled_rows,
+                    "label_context": label_context,
+                    "constraints": {
+                        "one_followup_one_controller": True,
+                        "high_confidence_only": True,
+                    },
+                }
+            ),
+        )
         if out and isinstance(out.get("filters"), list):
             filters = out["filters"]
 
