@@ -103,3 +103,11 @@ jupyter notebook bht_agentic_pipeline_azure.ipynb
 
 - For very wide surveys, mapping is chunked in batches.
 - If LLM config is missing or API fails, deterministic heuristics are used.
+
+
+## Mapping & metadata behavior (updated)
+
+- Numbered column families are bucketed by stem to avoid fragmented mappings (example: `PROF#1..PROF#5` -> one canonical metric, `ACTIVITY#1..#7` -> one canonical metric).
+- The pipeline prioritizes SPSS `value_labels` for metadata definitions.
+- `master_metadata.json` now uses `value_labels` as the source for `allowed` values and labels, instead of computing min/max from observed data.
+- This makes metadata deterministic and questionnaire/codebook-aligned.

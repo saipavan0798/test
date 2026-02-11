@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import os
 import re
 from dataclasses import dataclass
@@ -14,10 +13,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 CANONICAL_HINTS = {
     "AWARENESS": [r"\baware", r"awareness", r"know"],
-    "USAGE": [r"\buse\b", r"usage", r"used", r"trial"],
+    "USAGE": [r"\buse\b", r"usage", r"used", r"trial", r"activity"],
     "AFFINITY": [r"affinity", r"love", r"prefer", r"consider"],
     "UNIQUENESS": [r"unique", r"distinct"],
     "DYNAMISM": [r"dynamic", r"modern", r"innovative"],
+    "PROOF": [r"\bproof\b", r"\bprof\b"],
 }
 
 
@@ -87,27 +87,38 @@ def normalize_name(name: str) -> str:
     return s.upper() or "UNKNOWN"
 
 
+def infer_type_from_value_labels(value_labels: Dict[Any, Any]) -> Tuple[str, Dict[str, Any]]:
+    if not value_labels:
+        return "unknown", {}
+
+    codes = list(value_labels.keys())
+    numeric_codes = [c for c in codes if isinstance(c, (int, float))]
+
+    if set(numeric_codes) == {0, 1} and len(codes) == 2:
+        return "binary", {"allowed": [0, 1]}
+
+    likert_candidates = {1, 2, 3, 4, 5, 6, 7}
+    if numeric_codes and set(numeric_codes).issubset(likert_candidates):
+        return "likert", {"allowed": sorted(int(x) for x in numeric_codes)}
+
+    return "categorical", {"allowed": sorted(codes, key=lambda x: str(x))}
+
+
+def extract_series_stem(column: str) -> str:
+    raw = str(column).upper()
+    raw = re.sub(r"[^A-Z0-9#]+", "_", raw).strip("_")
+    raw = re.sub(r"#\d+$", "", raw)
+    raw = re.sub(r"_\d+$", "", raw)
+    return raw or "UNKNOWN"
+
+
 def infer_type(series) -> Tuple[str, Dict[str, Any]]:
     non_null = series.dropna()
     if len(non_null) == 0:
         return "unknown", {}
-
-    uniques = non_null.unique()
-    unique_count = len(uniques)
-
     if getattr(non_null, "dtype", None).kind in {"i", "u", "f"}:
-        vals = [v for v in uniques if not (isinstance(v, float) and math.isnan(v))]
-        if set(vals).issubset({0, 1}) and unique_count <= 2:
-            return "binary", {"allowed": [0, 1]}
-        if unique_count <= 7 and set(vals).issubset({1, 2, 3, 4, 5, 6, 7}):
-            return "likert", {"allowed": sorted(int(v) for v in vals)}
-        return "numeric", {"min": float(non_null.min()), "max": float(non_null.max())}
-
-    sample = [str(v) for v in non_null.head(200).tolist()]
-    allowed = sorted({str(v) for v in non_null.unique().tolist()})
-    if unique_count <= 20:
-        return "categorical", {"allowed": allowed}
-    return "text", {"sample": sample[:20]}
+        return "numeric", {}
+    return "text", {}
 
 
 def profile_dataframe(df, meta) -> List[Dict[str, Any]]:
@@ -115,32 +126,62 @@ def profile_dataframe(df, meta) -> List[Dict[str, Any]]:
     value_labels = meta.variable_value_labels or {}
     labels = meta.column_labels or []
     for i, col in enumerate(df.columns):
-        s = df[col]
-        col_type, extra = infer_type(s)
+        col_value_labels = value_labels.get(col, {})
+        col_type, extra = infer_type_from_value_labels(col_value_labels)
         rows.append(
             {
                 "column": col,
                 "label": labels[i] if i < len(labels) else None,
+                "stem": extract_series_stem(col),
                 "type_guess": col_type,
-                "missing_rate": float(s.isna().mean()),
-                "n_unique": int(s.nunique(dropna=True)),
-                "value_labels": value_labels.get(col, {}),
+                "value_labels": col_value_labels,
                 **extra,
             }
         )
     return rows
 
 
-def heuristic_metric_name(column: str, label: Optional[str]) -> str:
+def heuristic_metric_name(column: str, label: Optional[str], stem: Optional[str] = None) -> str:
     hay = f"{column} {label or ''}".lower()
     for canon, patterns in CANONICAL_HINTS.items():
         if any(re.search(p, hay) for p in patterns):
             return canon
-    return normalize_name(column)
+    if stem:
+        return normalize_name(stem)
+    return normalize_name(extract_series_stem(column))
 
 
 def chunked(items: List[Any], n: int) -> List[List[Any]]:
     return [items[i : i + n] for i in range(0, len(items), n)]
+
+
+def enforce_stem_consistency(profiles: List[Dict[str, Any]], mapping: Dict[str, str]) -> Dict[str, str]:
+    by_stem: Dict[str, List[Dict[str, Any]]] = {}
+    for row in profiles:
+        by_stem.setdefault(row.get("stem") or extract_series_stem(row["column"]), []).append(row)
+
+    for stem, rows in by_stem.items():
+        if len(rows) < 2:
+            continue
+
+        hint_votes: List[str] = []
+        map_votes: List[str] = []
+        for row in rows:
+            col = row["column"]
+            hint_votes.append(heuristic_metric_name(col, row.get("label"), stem=stem))
+            map_votes.append(mapping.get(col, normalize_name(stem)))
+
+        chosen = next((v for v in hint_votes if v != normalize_name(stem)), None)
+        if not chosen:
+            freq: Dict[str, int] = {}
+            for v in map_votes:
+                freq[v] = freq.get(v, 0) + 1
+            chosen = sorted(freq.items(), key=lambda x: (-x[1], x[0]))[0][0]
+
+        for row in rows:
+            mapping[row["column"]] = chosen
+
+    return mapping
 
 
 def map_columns_agentic(profiles: List[Dict[str, Any]], llm: LLMClient) -> Dict[str, str]:
@@ -152,7 +193,7 @@ def map_columns_agentic(profiles: List[Dict[str, Any]], llm: LLMClient) -> Dict[
     )
 
     for batch in chunked(profiles, 120):
-        fallback = {r["column"]: heuristic_metric_name(r["column"], r.get("label")) for r in batch}
+        fallback = {r["column"]: heuristic_metric_name(r["column"], r.get("label"), r.get("stem")) for r in batch}
         user = json.dumps({"columns": batch, "fallback": fallback})
         llm_out = llm.complete_json(system, user)
         if llm_out and isinstance(llm_out.get("mapping"), dict):
@@ -161,19 +202,28 @@ def map_columns_agentic(profiles: List[Dict[str, Any]], llm: LLMClient) -> Dict[
         else:
             mapping.update(fallback)
 
-    return mapping
+    return enforce_stem_consistency(profiles, mapping)
 
 
-def build_master_metadata(df, mapping: Dict[str, str]) -> Dict[str, Any]:
+def build_master_metadata(meta, mapping: Dict[str, str]) -> Dict[str, Any]:
     grouped: Dict[str, List[str]] = {}
     for col, canon in mapping.items():
         grouped.setdefault(canon, []).append(col)
 
+    value_labels_map = meta.variable_value_labels or {}
     metadata: Dict[str, Any] = {}
     for canon, cols in grouped.items():
-        series = df[cols].stack(dropna=True)
-        t, extra = infer_type(series)
-        metadata[canon] = {"type": t, **extra}
+        merged_labels: Dict[Any, Any] = {}
+        for col in cols:
+            merged_labels.update(value_labels_map.get(col, {}))
+
+        col_type, extra = infer_type_from_value_labels(merged_labels)
+        entry: Dict[str, Any] = {"type": col_type, **extra}
+        if merged_labels:
+            entry["value_labels"] = {
+                str(k): str(v) for k, v in sorted(merged_labels.items(), key=lambda x: str(x[0]))
+            }
+        metadata[canon] = entry
     return metadata
 
 
@@ -266,7 +316,7 @@ def main() -> None:
 
     profiles = profile_dataframe(df, meta)
     mapping = map_columns_agentic(profiles, llm)
-    master_metadata = build_master_metadata(df, mapping)
+    master_metadata = build_master_metadata(meta, mapping)
     logic = detect_logic_rules(df, mapping, llm)
 
     write_json(outdir / "master_metadata.json", master_metadata)
