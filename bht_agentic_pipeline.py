@@ -227,6 +227,39 @@ def build_master_metadata(meta, mapping: Dict[str, str]) -> Dict[str, Any]:
     return metadata
 
 
+
+
+def default_description(metric_name: str) -> str:
+    pretty = metric_name.replace("_", " ").strip().title()
+    return f"Survey metric capturing {pretty}."
+
+
+def enrich_metadata_descriptions(metadata: Dict[str, Any], llm: LLMClient) -> Dict[str, Any]:
+    system = (
+        "You write concise survey metadata descriptions. "
+        "Return strict JSON: {'description': '...'} in one sentence."
+    )
+
+    for metric_name, entry in metadata.items():
+        context = {
+            "metric": metric_name,
+            "type": entry.get("type"),
+            "allowed": entry.get("allowed"),
+            "value_labels": entry.get("value_labels"),
+        }
+
+        description = None
+        if llm.enabled:
+            out = llm.complete_json(system, json.dumps(context))
+            if out and isinstance(out.get("description"), str):
+                candidate = out["description"].strip()
+                if candidate:
+                    description = candidate
+
+        entry["description"] = description or default_description(metric_name)
+
+    return metadata
+
 def detect_logic_rules(df, mapping: Dict[str, str], llm: LLMClient) -> Dict[str, Any]:
     rules = []
     reverse: Dict[str, List[str]] = {}
@@ -317,6 +350,7 @@ def main() -> None:
     profiles = profile_dataframe(df, meta)
     mapping = map_columns_agentic(profiles, llm)
     master_metadata = build_master_metadata(meta, mapping)
+    master_metadata = enrich_metadata_descriptions(master_metadata, llm)
     logic = detect_logic_rules(df, mapping, llm)
 
     write_json(outdir / "master_metadata.json", master_metadata)
