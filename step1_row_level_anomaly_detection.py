@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any, Dict, List
 
 import numpy as np
@@ -164,15 +163,3 @@ class DetectionAgent:
             "rule": rule,
         }
 
-
-def save_step1_output(anomalies: List[Dict[str, Any]], outdir: str = "data/outputs") -> str:
-    out = Path(outdir)
-    out.mkdir(parents=True, exist_ok=True)
-    report_path = out / "column_health_report.xlsx"
-
-    df = pd.DataFrame(
-        anomalies,
-        columns=["row_index", "row_number", "column", "metric", "value", "issue_type", "rule"],
-    )
-    df.to_excel(report_path, index=False)
-    return str(report_path)

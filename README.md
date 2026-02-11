@@ -135,4 +135,10 @@ jupyter notebook bht_agentic_pipeline_azure.ipynb
 ## Step 1 Agent (Row-Level Anomaly Detection)
 
 - Added `step1_row_level_anomaly_detection.py` with row-level checks against metadata + column mapping.
-- Notebook now runs Step 1 and saves: `data/outputs/column_health_report.xlsx`.
+- Notebook now runs Step 1 and keeps `anomalies` in-memory for Step 2 (no file output at Step 1).
+
+
+## Step 2 Agent (Column Health Classification)
+
+- Added `step2_column_health_classification.py` to classify each column as `SYSTEMIC` vs `ROW_LEVEL` from Step 1 anomalies.
+- Notebook now runs Step 2 and saves: `data/outputs/column_health_report.xlsx`.
