@@ -33,6 +33,6 @@ class ColumnHealthAgent:
 def save_step2_output(column_health: pd.DataFrame, outdir: str = "data/outputs") -> str:
     out = Path(outdir)
     out.mkdir(parents=True, exist_ok=True)
-    report_path = out / "column_health_report.xlsx"
-    column_health.to_excel(report_path, index=False)
+    report_path = out / "column_health_report.csv"
+    column_health.to_csv(report_path, index=False)
     return str(report_path)

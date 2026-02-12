@@ -163,3 +163,14 @@ class DetectionAgent:
             "rule": rule,
         }
 
+
+
+
+def save_step1_output(anomalies, outdir: str = "data/outputs") -> str:
+    from pathlib import Path
+
+    out = Path(outdir)
+    out.mkdir(parents=True, exist_ok=True)
+    out_path = out / "anomaly.csv"
+    pd.DataFrame(anomalies).to_csv(out_path, index=False)
+    return str(out_path)

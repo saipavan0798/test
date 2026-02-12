@@ -112,13 +112,13 @@ def save_step0_outputs(valid_nulls, invalid_missing, uncertain_missing, outdir="
     invalid_df = pd.DataFrame(invalid_missing, columns=["row_index", "column"])
     uncertain_df = pd.DataFrame(uncertain_missing, columns=["row_index", "column"])
 
-    valid_path = os.path.join(outdir, "step0_valid_nulls.xlsx")
-    invalid_path = os.path.join(outdir, "step0_invalid_missing.xlsx")
-    uncertain_path = os.path.join(outdir, "step0_uncertain_missing.xlsx")
+    valid_path = os.path.join(outdir, "step0_valid_nulls.csv")
+    invalid_path = os.path.join(outdir, "step0_invalid_missing.csv")
+    uncertain_path = os.path.join(outdir, "step0_uncertain_missing.csv")
 
-    valid_df.to_excel(valid_path, index=False)
-    invalid_df.to_excel(invalid_path, index=False)
-    uncertain_df.to_excel(uncertain_path, index=False)
+    valid_df.to_csv(valid_path, index=False)
+    invalid_df.to_csv(invalid_path, index=False)
+    uncertain_df.to_csv(uncertain_path, index=False)
 
     return {
         "valid_nulls": valid_path,
