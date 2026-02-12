@@ -377,6 +377,39 @@ def _decode_value_label_dict(meta, col: str) -> Dict[str, str]:
     return {str(k): str(v) for k, v in labels.items()}
 
 
+def _candidate_trigger_sets(ctrl: str, meta, ctrl_series) -> List[List[Any]]:
+    """Return multiple trigger options to improve recall for skip-logic discovery."""
+    trigger_sets: List[List[Any]] = []
+
+    # 1) Semantic negative triggers from value labels.
+    negative = _controller_trigger_values(ctrl, meta)
+    if negative:
+        trigger_sets.append(negative)
+
+    # 2) Single-value triggers from all observed/value-labeled codes.
+    labels = (meta.variable_value_labels or {}).get(ctrl, {})
+    observed = list(ctrl_series.dropna().unique())
+    universe = list(labels.keys()) + observed
+    seen = set()
+    for val in universe:
+        key = str(val)
+        if key in seen:
+            continue
+        seen.add(key)
+        trigger_sets.append([val])
+
+    # Deduplicate trigger sets by normalized signature.
+    deduped: List[List[Any]] = []
+    signatures = set()
+    for values in trigger_sets:
+        sig = tuple(sorted(str(v) for v in values))
+        if sig in signatures:
+            continue
+        signatures.add(sig)
+        deduped.append(values)
+    return deduped
+
+
 def _build_questionnaire_candidates(df, mapping: Dict[str, str], meta) -> List[Dict[str, Any]]:
     """Build statistically strong controller->follow-up candidates across full column space."""
     reverse: Dict[str, List[str]] = {}
@@ -400,17 +433,9 @@ def _build_questionnaire_candidates(df, mapping: Dict[str, str], meta) -> List[D
 
     candidates: List[Dict[str, Any]] = []
     for ctrl in controllers:
-        trigger_values = _controller_trigger_values(ctrl, meta)
-        if not trigger_values:
-            continue
-
         ctrl_series = df[ctrl]
-        trigger_mask = ctrl_series.isin(trigger_values)
-        non_trigger_mask = (~trigger_mask) & ctrl_series.notna()
-
-        trigger_count = int(trigger_mask.sum())
-        non_trigger_count = int(non_trigger_mask.sum())
-        if trigger_count < 15 or non_trigger_count < 15:
+        trigger_sets = _candidate_trigger_sets(ctrl, meta, ctrl_series)
+        if not trigger_sets:
             continue
 
         for follow_col in followup_cols:
@@ -418,15 +443,24 @@ def _build_questionnaire_candidates(df, mapping: Dict[str, str], meta) -> List[D
             if token_overlap <= 0 and extract_series_stem(ctrl) != extract_series_stem(follow_col):
                 continue
 
-            null_when_trigger = float(df.loc[trigger_mask, follow_col].isna().mean())
-            null_when_non_trigger = float(df.loc[non_trigger_mask, follow_col].isna().mean())
-            lift = null_when_trigger - null_when_non_trigger
+            best_for_pair: Optional[Dict[str, Any]] = None
+            for trigger_values in trigger_sets:
+                trigger_mask = ctrl_series.isin(trigger_values)
+                non_trigger_mask = (~trigger_mask) & ctrl_series.notna()
 
-            # strong but not too strict to avoid missing real skip-logic
-            if null_when_trigger >= 0.85 and lift >= 0.45 and null_when_non_trigger <= 0.50:
-                score = lift + (0.10 * token_overlap)
-                candidates.append(
-                    {
+                trigger_count = int(trigger_mask.sum())
+                non_trigger_count = int(non_trigger_mask.sum())
+                if trigger_count < 8 or non_trigger_count < 8:
+                    continue
+
+                null_when_trigger = float(df.loc[trigger_mask, follow_col].isna().mean())
+                null_when_non_trigger = float(df.loc[non_trigger_mask, follow_col].isna().mean())
+                lift = null_when_trigger - null_when_non_trigger
+
+                # recall-friendly thresholds; ambiguity is filtered later.
+                if null_when_trigger >= 0.80 and lift >= 0.35 and null_when_non_trigger <= 0.60:
+                    score = lift + (0.10 * token_overlap)
+                    cand = {
                         "controller": ctrl,
                         "follow_col": follow_col,
                         "trigger_values": [str(v) for v in trigger_values],
@@ -436,7 +470,11 @@ def _build_questionnaire_candidates(df, mapping: Dict[str, str], meta) -> List[D
                         "null_when_non_trigger": null_when_non_trigger,
                         "token_overlap": token_overlap,
                     }
-                )
+                    if best_for_pair is None or cand["score"] > best_for_pair["score"]:
+                        best_for_pair = cand
+
+            if best_for_pair is not None:
+                candidates.append(best_for_pair)
     return candidates
 
 

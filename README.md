@@ -111,6 +111,7 @@ jupyter notebook bht_agentic_pipeline_azure.ipynb
 - Skip-logic trigger values are inferred from SPSS value-label meanings (e.g., No / Don't know / Refused), not only numeric `0`.
 - If high-confidence controller→follow-up evidence is not found, questionnaire logic is intentionally returned as blank (`filters: []`).
 - When LLM is enabled, questionnaire refinement now receives up to 50 sampled rows plus candidate controller/follow-up evidence and value-label context to improve funnel accuracy while preserving one-to-one follow-up assignment.
+- Trigger discovery now also evaluates single-code trigger candidates per controller (in addition to negative-label triggers) to capture more valid skip funnels without forcing many-to-many mappings.
 
 
 ## Mapping & metadata behavior (updated)
