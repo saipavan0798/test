@@ -1,53 +1,58 @@
 #!/usr/bin/env python3
-"""Step 5B: Clustered LLM decisions for uncertain missing values."""
+"""Step 5B: Missing-value LLM decisions for uncertain cases (hackathon mode)."""
 
 from __future__ import annotations
 
 import json
 from collections import defaultdict
-from typing import Any, Dict, List
 
 
 class MissingValueLLMAgentV2:
     """
-    Clustered LLM agent for resolving UNCERTAIN missing values only.
-    Operates at column-pattern level, not row level.
+    Hackathon-Optimized Version
+
+    - Calls LLM per column (like original design)
+    - BUT only for top N columns by volume of uncertain missing
+    - Remaining columns → NO_ACTION
     """
 
-    def __init__(self, client, deployment_name: str) -> None:
+    def __init__(self, client, deployment_name, max_llm_columns=2):
         self.client = client
         self.deployment = deployment_name
+        self.max_llm_columns = max_llm_columns
 
     # --------------------------------------------------
     # PUBLIC ENTRY POINT
     # --------------------------------------------------
-    def run(
-        self,
-        uncertain_cases: List[Dict[str, Any]],
-        variable_labels: Dict[str, str],
-        column_mapping: Dict[str, str],
-    ) -> List[Dict[str, Any]]:
-        if not uncertain_cases:
-            return []
-
+    def run(self, uncertain_cases, variable_labels, column_mapping):
         clusters = self._cluster_cases(uncertain_cases)
-        decisions: List[Dict[str, Any]] = []
+
+        # Sort columns by number of uncertain rows (descending)
+        sorted_columns = sorted(clusters.keys(), key=lambda c: len(clusters[c]), reverse=True)
+
+        # Select top N columns for LLM
+        llm_columns = set(sorted_columns[: self.max_llm_columns])
+
+        decisions = []
 
         for col, rows in clusters.items():
-            policy = self._reason_cluster(
-                column=col,
-                rows=rows,
-                variable_labels=variable_labels,
-                column_mapping=column_mapping,
-            )
+            if col in llm_columns:
+                policy = self._reason_cluster(col, rows, variable_labels, column_mapping)
+            else:
+                # Auto fallback for non-priority columns
+                policy = {
+                    "action": {"type": "NO_ACTION", "parameters": {"method": "none"}},
+                    "confidence": 0.0,
+                    "reasoning": "Not prioritized in hackathon mode",
+                }
 
             for r in rows:
                 decisions.append(
                     {
-                        "row_index": r.get("row_index"),
+                        "row_index": r["row_index"],
                         "column": col,
                         "action": policy["action"],
-                        "confidence": float(policy["confidence"]),
+                        "confidence": policy["confidence"],
                         "reasoning": policy["reasoning"],
                         "source": "MISSING_VALUE_LLM_V2",
                     }
@@ -56,138 +61,61 @@ class MissingValueLLMAgentV2:
         return decisions
 
     # --------------------------------------------------
-    # STEP 1 — CLUSTER BY COLUMN
+    # CLUSTER BY COLUMN
     # --------------------------------------------------
-    def _cluster_cases(self, cases: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
-        clusters: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    def _cluster_cases(self, cases):
+        clusters = defaultdict(list)
         for c in cases:
-            column = c.get("column")
-            if column is None:
-                continue
-            clusters[str(column)].append(c)
+            clusters[c["column"]].append(c)
         return clusters
 
     # --------------------------------------------------
-    # STEP 2 — LLM REASONING (ONCE PER COLUMN)
+    # LLM CALL
     # --------------------------------------------------
-    def _reason_cluster(
-        self,
-        column: str,
-        rows: List[Dict[str, Any]],
-        variable_labels: Dict[str, str],
-        column_mapping: Dict[str, str],
-    ) -> Dict[str, Any]:
+    def _reason_cluster(self, column, rows, variable_labels, column_mapping):
         metric = column_mapping.get(column, "UNKNOWN")
-
-        prompt = self._build_prompt(
-            column=column,
-            metric=metric,
-            rows=rows,
-            variable_labels=variable_labels,
-        )
-
-        try:
-            response = self.client.chat.completions.create(
-                model=self.deployment,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are a senior survey methodologist. "
-                            "You decide whether missing survey values are valid skips "
-                            "or true missing data. Be conservative."
-                        ),
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                max_completion_tokens=500,
-                response_format={"type": "json_object"},
-            )
-            text = response.choices[0].message.content.strip()
-            policy = json.loads(text)
-        except Exception:
-            policy = {
-                "action": {"type": "NO_ACTION", "parameters": {}},
-                "confidence": 0.0,
-                "reasoning": "Failed to parse LLM output",
-            }
-
-        return self._sanitize_policy(policy)
-
-    def _sanitize_policy(self, policy: Dict[str, Any]) -> Dict[str, Any]:
-        allowed_actions = {"VALID_NULL", "IMPUTE", "NO_ACTION"}
-
-        action = policy.get("action", {}) if isinstance(policy, dict) else {}
-        action_type = str(action.get("type", "NO_ACTION")).upper()
-        if action_type not in allowed_actions:
-            action_type = "NO_ACTION"
-
-        parameters = action.get("parameters", {}) if isinstance(action.get("parameters", {}), dict) else {}
-        method = str(parameters.get("method", "none")).lower()
-        if method not in {"median", "mode", "none"}:
-            method = "none"
-
-        confidence_raw = policy.get("confidence", 0.0) if isinstance(policy, dict) else 0.0
-        try:
-            confidence = float(confidence_raw)
-        except Exception:
-            confidence = 0.0
-        confidence = max(0.0, min(1.0, confidence))
-
-        reasoning = str(policy.get("reasoning", "No reasoning provided")) if isinstance(policy, dict) else "No reasoning provided"
-
-        return {
-            "action": {"type": action_type, "parameters": {"method": method}},
-            "confidence": confidence,
-            "reasoning": reasoning,
-        }
-
-    # --------------------------------------------------
-    # PROMPT
-    # --------------------------------------------------
-    def _build_prompt(
-        self,
-        column: str,
-        metric: str,
-        rows: List[Dict[str, Any]],
-        variable_labels: Dict[str, str],
-    ) -> str:
         description = variable_labels.get(column, "No description")
 
-        return f"""
+        prompt = f"""
 You are evaluating UNCERTAIN missing values in a survey dataset.
 
-### Column
-Name: {column}
+Column: {column}
 Metric: {metric}
 Description: {description}
 
-### Context
-- Dataset is Brand Health Tracking (BHT)
-- Missing values may be due to survey skip logic
-- Avoid unnecessary imputation
-- Prefer VALID_NULL if defensible
-- Do NOT invent data
+Number of rows affected: {len(rows)}
 
-### Observations
-- Number of rows affected: {len(rows)}
+Allowed Actions:
+- VALID_NULL
+- NO_ACTION
 
-### Allowed Actions (choose ONE)
-- VALID_NULL        → missing is logically correct
-- IMPUTE            → missing should be filled conservatively
-- NO_ACTION         → escalate for human review
+Return STRICT JSON:
 
-### Output Format (STRICT JSON)
 {{
-  "action": {{
-    "type": "VALID_NULL | IMPUTE | NO_ACTION",
-    "parameters": {{
-      "method": "median | mode | none"
-    }}
-  }},
+  "action": {{"type": "VALID_NULL | NO_ACTION", "parameters": {{"method": "none"}}}},
   "confidence": 0.0,
   "reasoning": "short explanation"
 }}
 
-Return ONLY valid JSON. No extra text.
+Return ONLY valid JSON.
 """
+
+        response = self.client.chat.completions.create(
+            model=self.deployment,
+            messages=[
+                {"role": "system", "content": "You are a senior survey methodologist. Be conservative."},
+                {"role": "user", "content": prompt},
+            ],
+            max_completion_tokens=300,
+        )
+
+        text = response.choices[0].message.content.strip()
+
+        try:
+            return json.loads(text)
+        except Exception:
+            return {
+                "action": {"type": "NO_ACTION", "parameters": {"method": "none"}},
+                "confidence": 0.0,
+                "reasoning": "LLM parsing failed",
+            }

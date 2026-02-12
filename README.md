@@ -127,7 +127,7 @@ jupyter notebook bht_agentic_pipeline_azure.ipynb
 
 ## Step 0 Agent (Missing Value Intelligence)
 
-- Added `agent/step0_missing_value_intelligence.py` with your Step 0 flow (questionnaire logic + group-scoped statistical inference).
+- Added `agent/step0_missing_value_intelligence.py` simplified V1 flow (questionnaire-logic-only, vectorized; no statistical inference).
 - Notebook now runs Step 0 after pipeline generation and saves:
   - `data/outputs/step0_valid_nulls.xlsx`
   - `data/outputs/step0_invalid_missing.xlsx`
@@ -168,9 +168,9 @@ jupyter notebook bht_agentic_pipeline_azure.ipynb
 
 ## Step 5B Agent (Missing Value LLM - Uncertain Cases Only)
 
-- Added `agent/step5b_missing_value_llm.py` (`MissingValueLLMAgentV2`) for uncertain missing-value cases from Step 0.
-- Clusters uncertain missing cases by `column` and makes one LLM call per column pattern.
-- Allowed actions are constrained to `VALID_NULL`, `IMPUTE`, or `NO_ACTION`.
+- Added `agent/step5b_missing_value_llm.py` (`MissingValueLLMAgentV2`) in hackathon mode for uncertain missing-value cases from Step 0.
+- Clusters uncertain missing cases by `column` and calls LLM only for top-N columns by uncertain volume (`max_llm_columns`).
+- Non-priority columns default to deterministic `NO_ACTION`; LLM action set is constrained to `VALID_NULL` or `NO_ACTION`.
 - Notebook now runs Step 5B on `uncertain_missing` and exports: `data/outputs/missing_llm_decisions.xlsx`.
 
 ## Step 6 Agent (Execution - Single Control Point)
