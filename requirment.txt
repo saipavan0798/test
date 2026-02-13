@@ -1,0 +1,8 @@
+numpy
+pandas
+pyreadstat
+requests
+python-dotenv
+openai
+jupyter
+openpyxl
