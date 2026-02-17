@@ -5,19 +5,21 @@ from pyspark.sql import functions as F
 from pyspark.sql.types import ArrayType, FloatType
 
 
-def build_with_groups_df(input_df, lsh_model, threshold):
+def build_with_groups_df(input_df, model, lsh_model, threshold):
     """
-    Build `with_groups_df` from `input_df` only.
+    Build `with_groups_df` from `input_df` using embedding model + BRP-LSH.
 
     Parameters
     ----------
     input_df : pyspark.sql.DataFrame
         Must contain: query, location, language.
-    lsh_model : object
-        Embedding model object with `.encode(text)` (e.g., SentenceTransformer).
-        Note: the name is kept as requested, but this object is used for embeddings.
+    model : object
+        Embedding model with `.encode(text)` (for example SentenceTransformer).
+    lsh_model : BucketedRandomProjectionLSH
+        LSH estimator. If None, it is created with:
+        inputCol='features', outputCol='hashes', bucketLength=1.5, numHashTables=3.
     threshold : float
-        Distance threshold for approxSimilarityJoin (e.g. 0.25).
+        Distance threshold for approxSimilarityJoin (for example 0.25).
 
     Returns
     -------
@@ -26,7 +28,7 @@ def build_with_groups_df(input_df, lsh_model, threshold):
     """
 
     embed_udf = F.udf(
-        lambda text: [float(x) for x in lsh_model.encode(text).tolist()],
+        lambda text: [float(x) for x in model.encode(text).tolist()],
         ArrayType(FloatType()),
     )
 
@@ -48,13 +50,15 @@ def build_with_groups_df(input_df, lsh_model, threshold):
         .withColumn("features", to_vec_udf("norm_vec"))
     )
 
-    lsh = BucketedRandomProjectionLSH(
-        inputCol="features",
-        outputCol="hashes",
-        bucketLength=1.5,
-        numHashTables=3,
-    )
-    fitted_lsh_model = lsh.fit(vec_df)
+    if lsh_model is None:
+        lsh_model = BucketedRandomProjectionLSH(
+            inputCol="features",
+            outputCol="hashes",
+            bucketLength=1.5,
+            numHashTables=3,
+        )
+
+    fitted_lsh_model = lsh_model.fit(vec_df)
 
     similar_df = fitted_lsh_model.approxSimilarityJoin(
         vec_df,

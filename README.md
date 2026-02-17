@@ -6,30 +6,38 @@ This repository includes helpers in `pyspark_batching_solution.py` for:
 
 ## Build `with_groups_df`
 
-`build_with_groups_df` now uses exactly these parameters:
+`build_with_groups_df` uses exactly these parameters:
 - `input_df`
+- `model`
 - `lsh_model`
 - `threshold`
 
 ```python
 from sentence_transformers import SentenceTransformer
+from pyspark.ml.feature import BucketedRandomProjectionLSH
 from pyspark_batching_solution import build_with_groups_df
 
 model = SentenceTransformer("all-MiniLM-L6-v2")
 
+lsh_model = BucketedRandomProjectionLSH(
+    inputCol="features",
+    outputCol="hashes",
+    bucketLength=1.5,
+    numHashTables=3,
+)
+
 with_groups_df = build_with_groups_df(
     input_df=input_df,
-    lsh_model=model,
+    model=model,
+    lsh_model=lsh_model,
     threshold=0.25,
 )
 ```
 
 Notes:
 - `vec_df` is built internally from `input_df`.
-- LSH is built internally with:
-  - `bucketLength=1.5`
-  - `numHashTables=3`
-- Safe normalization is used to avoid division-by-zero for zero vectors.
+- if `lsh_model` is passed as `None`, the same BRP-LSH config above is created internally.
+- safe normalization is used to avoid division-by-zero for zero vectors.
 
 Returned columns:
 - `query`
