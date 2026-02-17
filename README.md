@@ -37,6 +37,7 @@ with_groups_df = build_with_groups_df(
 Notes:
 - `vec_df` is built internally from `input_df`.
 - if `lsh_model` is passed as `None`, the same BRP-LSH config above is created internally.
+- query text is normalized before embedding (e.g., `iphone15` -> `iphone 15`, hyphens/case cleaned).
 - safe normalization is used to avoid division-by-zero for zero vectors.
 
 Returned columns:
