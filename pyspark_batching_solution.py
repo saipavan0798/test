@@ -194,3 +194,23 @@ def build_query_batches(with_groups_df, batch_size=5):
         .orderBy("batch_id")
         .select("query", "location", "language")
     )
+
+
+def order_with_groups_df(with_groups_df):
+    """
+    Order grouped results by number of matches (desc), then group label (asc), then query (asc).
+
+    Adds `match_count` for visibility and returns ordered rows.
+    """
+
+    group_sizes_df = (
+        with_groups_df
+        .groupBy("final_group", "location", "language")
+        .agg(F.count("*").alias("match_count"))
+    )
+
+    return (
+        with_groups_df
+        .join(group_sizes_df, ["final_group", "location", "language"], "left")
+        .orderBy(F.desc("match_count"), F.asc("final_group"), F.asc("query"))
+    )

@@ -2,7 +2,8 @@
 
 This repository includes helpers in `pyspark_batching_solution.py` for:
 1. building `with_groups_df` from `input_df`, and
-2. batching grouped queries with a configurable `batch_size`.
+2. ordering grouped queries by match volume + alphabetic group name, and
+3. batching grouped queries with a configurable `batch_size`.
 
 ## Build `with_groups_df`
 
@@ -67,3 +68,14 @@ Behavior:
 ## Demo notebook
 
 See `pyspark_batching_demo.ipynb` for an end-to-end example with a 50-row PySpark `input_df` calling both functions.
+
+
+## Order grouped output
+
+```python
+from pyspark_batching_solution import order_with_groups_df
+
+ordered_with_groups_df = order_with_groups_df(with_groups_df)
+# columns include: query, location, language, final_group, match_count
+# order: match_count desc, final_group asc, query asc
+```
