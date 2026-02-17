@@ -56,6 +56,7 @@ Behavior:
 - keeps similarity groups together,
 - splits only groups larger than `batch_size`,
 - packs chunks per `location` + `language`.
+- safe-normalizes embeddings and handles zero vectors (prevents division-by-zero errors).
 
 ## Demo notebook
 

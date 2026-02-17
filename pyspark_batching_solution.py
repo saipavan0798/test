@@ -54,10 +54,15 @@ def build_with_groups_df(
             )
 
         embed_udf = F.udf(lambda text: embedding_fn(text), ArrayType(FloatType()))
-        norm_udf = F.udf(
-            lambda v: [x / (sum(i * i for i in v) ** 0.5) for x in v] if v else v,
-            ArrayType(FloatType()),
-        )
+        def _safe_normalize(v):
+            if not v:
+                return v
+            norm = sum(i * i for i in v) ** 0.5
+            if norm == 0.0:
+                return [0.0 for _ in v]
+            return [float(x) / norm for x in v]
+
+        norm_udf = F.udf(_safe_normalize, ArrayType(FloatType()))
         to_vec_udf = F.udf(lambda arr: Vectors.dense(arr), VectorUDT())
 
         vec_df = (
