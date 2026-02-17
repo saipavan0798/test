@@ -5,16 +5,6 @@ from pyspark.sql import functions as F
 from pyspark.sql.types import ArrayType, FloatType
 
 
-def _normalize_query_text(col):
-    """Normalize query text for better semantic matching (e.g. iphone15 -> iphone 15)."""
-    normalized = F.lower(F.trim(col))
-    normalized = F.regexp_replace(normalized, r"[^a-z0-9]+", " ")
-    normalized = F.regexp_replace(normalized, r"([a-z])([0-9])", r"$1 $2")
-    normalized = F.regexp_replace(normalized, r"([0-9])([a-z])", r"$1 $2")
-    normalized = F.regexp_replace(normalized, r"\s+", " ")
-    return F.trim(normalized)
-
-
 
 def build_with_groups_df(input_df, model, lsh_model, threshold):
     """
@@ -54,11 +44,14 @@ def build_with_groups_df(input_df, model, lsh_model, threshold):
     norm_udf = F.udf(_safe_normalize, ArrayType(FloatType()))
     to_vec_udf = F.udf(lambda arr: Vectors.dense(arr), VectorUDT())
 
-    prepped_df = input_df.withColumn("query_norm", _normalize_query_text(F.col("query")))
+    prepped_df = input_df.withColumn(
+        "query_compact",
+        F.regexp_replace(F.col("query"), r"\s+", ""),
+    )
 
     vec_df = (
         prepped_df
-        .withColumn("embedding", embed_udf("query_norm"))
+        .withColumn("embedding", embed_udf("query"))
         .withColumn("norm_vec", norm_udf("embedding"))
         .withColumn("features", to_vec_udf("norm_vec"))
     )
@@ -96,11 +89,10 @@ def build_with_groups_df(input_df, model, lsh_model, threshold):
         )
     )
 
-    # Force links for text variants that normalize to the same tokenization
-    # (e.g. iphone15, iphone-15 -> iphone 15).
-    norm_links_df = (
+    # Force links for space-variant forms (e.g. "iphone 15" and "iphone15").
+    compact_links_df = (
         prepped_df
-        .groupBy("query_norm")
+        .groupBy("query_compact")
         .agg(F.collect_set("query").alias("queries"))
         .where(F.size("queries") > 1)
         .select(F.explode("queries").alias("query1"), "queries")
@@ -108,7 +100,7 @@ def build_with_groups_df(input_df, model, lsh_model, threshold):
         .where(F.col("query1") != F.col("query2"))
     )
 
-    edges_df = edges_df.unionByName(norm_links_df).distinct()
+    edges_df = edges_df.unionByName(compact_links_df).distinct()
 
     vertices_df = input_df.select("query").distinct()
     clusters_df = vertices_df.withColumn("cluster_id", F.col("query"))
