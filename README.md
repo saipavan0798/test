@@ -1,39 +1,35 @@
 # Query batching helper
 
 This repository includes helpers in `pyspark_batching_solution.py` for:
-1. building `with_groups_df` from your embedding + LSH graph, and
+1. building `with_groups_df` from `input_df`, and
 2. batching grouped queries with a configurable `batch_size`.
 
 ## Build `with_groups_df`
 
-You now have two options:
-
-### Option A: pass `vec_df` + fitted `lsh_model`
+`build_with_groups_df` now uses exactly these parameters:
+- `input_df`
+- `lsh_model`
+- `threshold`
 
 ```python
+from sentence_transformers import SentenceTransformer
+from pyspark_batching_solution import build_with_groups_df
+
+model = SentenceTransformer("all-MiniLM-L6-v2")
+
 with_groups_df = build_with_groups_df(
     input_df=input_df,
-    vec_df=vec_df,
-    lsh_model=lsh_model,
+    lsh_model=model,
     threshold=0.25,
-    propagation_steps=6,
 )
 ```
 
-### Option B: build `vec_df` inside the function from `input_df`
-
-```python
-with_groups_df = build_with_groups_df(
-    input_df=input_df,
-    vec_df=None,
-    lsh_model=None,
-    embedding_fn=lambda text: model.encode(text).tolist(),
-    threshold=0.25,
-    propagation_steps=6,
-    bucket_length=1.5,
-    num_hash_tables=3,
-)
-```
+Notes:
+- `vec_df` is built internally from `input_df`.
+- LSH is built internally with:
+  - `bucketLength=1.5`
+  - `numHashTables=3`
+- Safe normalization is used to avoid division-by-zero for zero vectors.
 
 Returned columns:
 - `query`
@@ -44,6 +40,8 @@ Returned columns:
 ## Build final batches
 
 ```python
+from pyspark_batching_solution import build_query_batches
+
 final_df = build_query_batches(with_groups_df, batch_size=5)
 ```
 
@@ -56,10 +54,7 @@ Behavior:
 - keeps similarity groups together,
 - splits only groups larger than `batch_size`,
 - packs chunks per `location` + `language`.
-- safe-normalizes embeddings and handles zero vectors (prevents division-by-zero errors).
 
 ## Demo notebook
 
-See `pyspark_batching_demo.ipynb` for an end-to-end example with a 50-row PySpark `input_df` that calls:
-- `build_with_groups_df(...)`
-- `build_query_batches(...)`
+See `pyspark_batching_demo.ipynb` for an end-to-end example with a 50-row PySpark `input_df` calling both functions.

@@ -5,41 +5,19 @@ from pyspark.sql import functions as F
 from pyspark.sql.types import ArrayType, FloatType
 
 
-def build_with_groups_df(
-    input_df,
-    vec_df=None,
-    lsh_model=None,
-    threshold=0.25,
-    propagation_steps=6,
-    embedding_fn=None,
-    bucket_length=1.5,
-    num_hash_tables=3,
-):
+def build_with_groups_df(input_df, lsh_model, threshold):
     """
-    Build `with_groups_df` from a similarity graph.
-
-    You can pass either:
-    1) precomputed `vec_df` + fitted `lsh_model`, or
-    2) only `input_df` and `embedding_fn` (this function will build vec_df and fit LSH).
+    Build `with_groups_df` from `input_df` only.
 
     Parameters
     ----------
     input_df : pyspark.sql.DataFrame
         Must contain: query, location, language.
-    vec_df : pyspark.sql.DataFrame, optional
-        Must contain: query, features. If missing, it is derived from `input_df`.
-    lsh_model : BucketedRandomProjectionLSHModel, optional
-        Fitted model. If missing, it is fit on vec_df.
+    lsh_model : object
+        Embedding model object with `.encode(text)` (e.g., SentenceTransformer).
+        Note: the name is kept as requested, but this object is used for embeddings.
     threshold : float
-        Distance threshold used in approxSimilarityJoin.
-    propagation_steps : int
-        Number of label-propagation iterations.
-    embedding_fn : callable, optional
-        Function text -> list[float], required when vec_df is not provided.
-    bucket_length : float
-        LSH bucket length when fitting inside this function.
-    num_hash_tables : int
-        Number of LSH hash tables when fitting inside this function.
+        Distance threshold for approxSimilarityJoin (e.g. 0.25).
 
     Returns
     -------
@@ -47,41 +25,38 @@ def build_with_groups_df(
         Columns: query, location, language, final_group
     """
 
-    if vec_df is None:
-        if embedding_fn is None:
-            raise ValueError(
-                "When vec_df is None, you must provide embedding_fn(text) -> list[float]."
-            )
+    embed_udf = F.udf(
+        lambda text: [float(x) for x in lsh_model.encode(text).tolist()],
+        ArrayType(FloatType()),
+    )
 
-        embed_udf = F.udf(lambda text: embedding_fn(text), ArrayType(FloatType()))
-        def _safe_normalize(v):
-            if not v:
-                return v
-            norm = sum(i * i for i in v) ** 0.5
-            if norm == 0.0:
-                return [0.0 for _ in v]
-            return [float(x) / norm for x in v]
+    def _safe_normalize(v):
+        if not v:
+            return v
+        norm = sum(i * i for i in v) ** 0.5
+        if norm == 0.0:
+            return [0.0 for _ in v]
+        return [float(x) / norm for x in v]
 
-        norm_udf = F.udf(_safe_normalize, ArrayType(FloatType()))
-        to_vec_udf = F.udf(lambda arr: Vectors.dense(arr), VectorUDT())
+    norm_udf = F.udf(_safe_normalize, ArrayType(FloatType()))
+    to_vec_udf = F.udf(lambda arr: Vectors.dense(arr), VectorUDT())
 
-        vec_df = (
-            input_df
-            .withColumn("embedding", embed_udf("query"))
-            .withColumn("norm_vec", norm_udf("embedding"))
-            .withColumn("features", to_vec_udf("norm_vec"))
-        )
+    vec_df = (
+        input_df
+        .withColumn("embedding", embed_udf("query"))
+        .withColumn("norm_vec", norm_udf("embedding"))
+        .withColumn("features", to_vec_udf("norm_vec"))
+    )
 
-    if lsh_model is None:
-        lsh = BucketedRandomProjectionLSH(
-            inputCol="features",
-            outputCol="hashes",
-            bucketLength=bucket_length,
-            numHashTables=num_hash_tables,
-        )
-        lsh_model = lsh.fit(vec_df)
+    lsh = BucketedRandomProjectionLSH(
+        inputCol="features",
+        outputCol="hashes",
+        bucketLength=1.5,
+        numHashTables=3,
+    )
+    fitted_lsh_model = lsh.fit(vec_df)
 
-    similar_df = lsh_model.approxSimilarityJoin(
+    similar_df = fitted_lsh_model.approxSimilarityJoin(
         vec_df,
         vec_df,
         threshold=threshold,
@@ -107,7 +82,7 @@ def build_with_groups_df(
     vertices_df = input_df.select("query").distinct()
     clusters_df = vertices_df.withColumn("cluster_id", F.col("query"))
 
-    for _ in range(propagation_steps):
+    for _ in range(6):
         propagated_df = (
             clusters_df
             .join(edges_df, clusters_df.query == edges_df.query1, "left")
