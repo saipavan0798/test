@@ -2,7 +2,8 @@ from pyspark.ml.feature import BucketedRandomProjectionLSH
 from pyspark.ml.linalg import VectorUDT, Vectors
 from pyspark.sql import Window
 from pyspark.sql import functions as F
-from pyspark.sql.types import ArrayType, FloatType
+from pyspark.sql.types import ArrayType, FloatType, IntegerType, StructField, StructType
+import pandas as pd
 
 
 
@@ -140,8 +141,25 @@ def build_with_groups_df(input_df, model, lsh_model, threshold):
     )
 
 
+def _assign_batch_ids(sizes, batch_size):
+    """Greedy contiguous assignment that never lets a batch exceed batch_size."""
+    batch_ids = []
+    current_batch = 0
+    current_size = 0
+
+    for size in sizes:
+        size = int(size)
+        if current_size > 0 and current_size + size > int(batch_size):
+            current_batch += 1
+            current_size = 0
+        batch_ids.append(current_batch)
+        current_size += size
+
+    return batch_ids
+
+
 def build_query_batches(with_groups_df, batch_size=5):
-    """Build query batches while preserving similarity groups and enforcing max batch size."""
+    """Build query batches while preserving similarity groups and strictly enforcing max batch size."""
 
     groups_df = (
         with_groups_df
@@ -152,7 +170,7 @@ def build_query_batches(with_groups_df, batch_size=5):
         )
     )
 
-    # Split only oversized groups into fixed chunks (each chunk_size <= batch_size).
+    # Split only oversized groups into fixed chunks (chunk_size <= batch_size).
     exploded_df = groups_df.select(
         "final_group",
         "location",
@@ -170,31 +188,33 @@ def build_query_batches(with_groups_df, batch_size=5):
         )
     )
 
-    # For each locale partition, place chunks into batches by cumulative size.
-    order_w = Window.partitionBy("location", "language").orderBy(
-        F.desc("chunk_size"), F.asc("final_group"), F.asc("chunk_id")
-    )
+    assign_schema = StructType([
+        StructField("location", chunked_df.schema["location"].dataType, False),
+        StructField("language", chunked_df.schema["language"].dataType, False),
+        StructField("final_group", chunked_df.schema["final_group"].dataType, False),
+        StructField("chunk_id", IntegerType(), False),
+        StructField("queries", chunked_df.schema["queries"].dataType, False),
+        StructField("chunk_size", IntegerType(), False),
+        StructField("batch_id", IntegerType(), False),
+    ])
 
-    packed_df = (
-        chunked_df
-        .withColumn(
-            "running_size",
-            F.sum("chunk_size").over(
-                order_w.rowsBetween(Window.unboundedPreceding, Window.currentRow)
-            ),
-        )
-        .withColumn("batch_id", ((F.col("running_size") - F.lit(10)) / F.lit(batch_size)).cast("int"))
-    )
+    def _pack_partition(pdf: pd.DataFrame) -> pd.DataFrame:
+        pdf = pdf.sort_values(["chunk_size", "final_group", "chunk_id"], ascending=[False, True, True]).reset_index(drop=True)
+        pdf["batch_id"] = _assign_batch_ids(pdf["chunk_size"].tolist(), batch_size)
+        pdf["chunk_id"] = pdf["chunk_id"].astype(int)
+        pdf["chunk_size"] = pdf["chunk_size"].astype(int)
+        pdf["batch_id"] = pdf["batch_id"].astype(int)
+        return pdf[["location", "language", "final_group", "chunk_id", "queries", "chunk_size", "batch_id"]]
 
-    final_df = (
+    packed_df = chunked_df.groupBy("location", "language").applyInPandas(_pack_partition, schema=assign_schema)
+
+    return (
         packed_df
         .groupBy("batch_id", "location", "language")
         .agg(F.flatten(F.collect_list("queries")).alias("query"))
-        .orderBy("batch_id")
+        .orderBy("location", "language", "batch_id")
         .select("query", "location", "language")
     )
-
-    return final_df
 
 
 def order_with_groups_df(with_groups_df):
