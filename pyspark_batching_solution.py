@@ -188,6 +188,9 @@ def build_query_batches(with_groups_df, batch_size=5):
         )
     )
 
+    # applyInPandas requires an explicit output schema, so we declare it up front.
+    # We keep the original chunk metadata and add `batch_id` which is assigned
+    # inside each (location, language) partition.
     assign_schema = StructType([
         StructField("location", chunked_df.schema["location"].dataType, False),
         StructField("language", chunked_df.schema["language"].dataType, False),
@@ -199,13 +202,25 @@ def build_query_batches(with_groups_df, batch_size=5):
     ])
 
     def _pack_partition(pdf: pd.DataFrame) -> pd.DataFrame:
+        # Sort chunks so packing is deterministic:
+        # - bigger chunks first (better fill efficiency),
+        # - then stable tie-breakers by group/chunk id.
         pdf = pdf.sort_values(["chunk_size", "final_group", "chunk_id"], ascending=[False, True, True]).reset_index(drop=True)
+
+        # Greedy assignment: start a new batch only when adding the next chunk
+        # would exceed `batch_size`. This guarantees each batch stays within limit.
         pdf["batch_id"] = _assign_batch_ids(pdf["chunk_size"].tolist(), batch_size)
+
+        # Enforce integer dtypes expected by Spark for schema consistency.
         pdf["chunk_id"] = pdf["chunk_id"].astype(int)
         pdf["chunk_size"] = pdf["chunk_size"].astype(int)
         pdf["batch_id"] = pdf["batch_id"].astype(int)
+
+        # Return exactly the columns declared in `assign_schema`.
         return pdf[["location", "language", "final_group", "chunk_id", "queries", "chunk_size", "batch_id"]]
 
+    # Execute the packing per locale partition so each project's language/location
+    # is packed independently and receives its own batch_id sequence.
     packed_df = chunked_df.groupBy("location", "language").applyInPandas(_pack_partition, schema=assign_schema)
 
     return (
