@@ -64,6 +64,7 @@ Behavior:
 - keeps similarity groups together,
 - splits only groups larger than `batch_size`,
 - packs chunks per `location` + `language`.
+- never exceeds `batch_size` in any output row.
 
 ## Demo notebook
 

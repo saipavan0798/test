@@ -2,7 +2,8 @@ from pyspark.ml.feature import BucketedRandomProjectionLSH
 from pyspark.ml.linalg import VectorUDT, Vectors
 from pyspark.sql import Window
 from pyspark.sql import functions as F
-from pyspark.sql.types import ArrayType, FloatType
+from pyspark.sql.types import ArrayType, FloatType, IntegerType, StructField, StructType
+import pandas as pd
 
 
 
@@ -169,29 +170,50 @@ def build_query_batches(with_groups_df, batch_size=5):
         )
     )
 
-    order_w = Window.partitionBy("location", "language").orderBy(
-        F.desc("chunk_size"), "final_group", "chunk_id"
+    ordered_chunks_df = chunked_df.orderBy(
+        F.col("location"),
+        F.col("language"),
+        F.desc("chunk_size"),
+        F.col("final_group"),
+        F.col("chunk_id"),
     )
 
-    packed_df = (
-        chunked_df
-        .withColumn(
-            "running_size",
-            F.sum("chunk_size").over(
-                order_w.rowsBetween(Window.unboundedPreceding, Window.currentRow)
-            ),
-        )
-        .withColumn(
-            "batch_id",
-            ((F.col("running_size") - 1) / F.lit(batch_size)).cast("int"),
-        )
-    )
+    assign_schema = StructType([
+        StructField("location", ordered_chunks_df.schema["location"].dataType, False),
+        StructField("language", ordered_chunks_df.schema["language"].dataType, False),
+        StructField("final_group", ordered_chunks_df.schema["final_group"].dataType, False),
+        StructField("chunk_id", IntegerType(), False),
+        StructField("queries", ordered_chunks_df.schema["queries"].dataType, False),
+        StructField("chunk_size", IntegerType(), False),
+        StructField("batch_id", IntegerType(), False),
+    ])
+
+    def _assign_batches(pdf: pd.DataFrame) -> pd.DataFrame:
+        pdf = pdf.sort_values(["chunk_size", "final_group", "chunk_id"], ascending=[False, True, True]).reset_index(drop=True)
+        batch_ids = []
+        current_batch = 0
+        current_size = 0
+
+        for size in pdf["chunk_size"].astype(int).tolist():
+            if current_size > 0 and current_size + size > batch_size:
+                current_batch += 1
+                current_size = 0
+            batch_ids.append(current_batch)
+            current_size += size
+
+        pdf["batch_id"] = batch_ids
+        pdf["chunk_id"] = pdf["chunk_id"].astype(int)
+        pdf["chunk_size"] = pdf["chunk_size"].astype(int)
+        pdf["batch_id"] = pdf["batch_id"].astype(int)
+        return pdf[["location", "language", "final_group", "chunk_id", "queries", "chunk_size", "batch_id"]]
+
+    packed_df = ordered_chunks_df.groupBy("location", "language").applyInPandas(_assign_batches, schema=assign_schema)
 
     return (
         packed_df
         .groupBy("batch_id", "location", "language")
         .agg(F.flatten(F.collect_list("queries")).alias("query"))
-        .orderBy("batch_id")
+        .orderBy("location", "language", "batch_id")
         .select("query", "location", "language")
     )
 
