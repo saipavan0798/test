@@ -183,7 +183,7 @@ def build_query_batches(with_groups_df, batch_size=5):
                 order_w.rowsBetween(Window.unboundedPreceding, Window.currentRow)
             ),
         )
-        .withColumn("batch_id", ((F.col("running_size") - 1) / F.lit(batch_size)).cast("int"))
+        .withColumn("batch_id", ((F.col("running_size") - F.lit(10)) / F.lit(batch_size)).cast("int"))
     )
 
     final_df = (

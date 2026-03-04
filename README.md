@@ -63,7 +63,7 @@ Output columns:
 Behavior:
 - keeps similarity groups together,
 - splits only groups larger than `batch_size`,
-- packs chunks per `location` + `language`.
+- packs chunks per `location` + `language` using a running-size safety offset of 10 when assigning batch ids.
 - never exceeds `batch_size` in any output row.
 
 ## Demo notebook
