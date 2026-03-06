@@ -1,8 +1,10 @@
+from pyspark import StorageLevel
 from pyspark.ml.feature import BucketedRandomProjectionLSH
 from pyspark.ml.linalg import VectorUDT, Vectors
 from pyspark.sql import Window
 from pyspark.sql import functions as F
-from pyspark.sql.types import ArrayType, FloatType
+from pyspark.sql.types import ArrayType, FloatType, IntegerType, StructField, StructType
+import pandas as pd
 
 
 
@@ -54,6 +56,7 @@ def build_with_groups_df(input_df, model, lsh_model, threshold):
         .withColumn("embedding", embed_udf("query"))
         .withColumn("norm_vec", norm_udf("embedding"))
         .withColumn("features", to_vec_udf("norm_vec"))
+        .persist(StorageLevel.MEMORY_AND_DISK)
     )
 
     if lsh_model is None:
@@ -124,7 +127,7 @@ def build_with_groups_df(input_df, model, lsh_model, threshold):
             .agg(F.min("new_cluster").alias("cluster_id"))
         )
 
-    return (
+    result_df = (
         input_df
         .join(
             clusters_df.select(
@@ -139,54 +142,69 @@ def build_with_groups_df(input_df, model, lsh_model, threshold):
         .select("query", "location", "language", "final_group")
     )
 
+    vec_df.unpersist()
+    return result_df
+
+
+def _assign_batch_ids(sizes, batch_size):
+    """Greedy contiguous assignment that never lets a batch exceed batch_size."""
+    batch_ids = []
+    current_batch = 0
+    current_size = 0
+
+    for size in sizes:
+        size = int(size)
+        if current_size > 0 and current_size + size > int(batch_size):
+            current_batch += 1
+            current_size = 0
+        batch_ids.append(current_batch)
+        current_size += size
+
+    return batch_ids
+
 
 def build_query_batches(with_groups_df, batch_size=5):
     """Build query batches while preserving similarity groups and strictly enforcing max batch size."""
 
-    groups_df = (
-        with_groups_df
-        .groupBy("final_group", "location", "language")
-        .agg(
-            F.collect_list("query").alias("queries"),
-            F.count("*").alias("group_size"),
-        )
-    )
-
-    # Split only oversized groups into fixed chunks (chunk_size <= batch_size).
-    exploded_df = groups_df.select(
-        "final_group",
-        "location",
-        "language",
-        F.posexplode("queries").alias("pos", "term"),
-    )
+    # Fast path: avoid collect_list -> explode roundtrip by assigning chunk_id directly per row.
+    # This reduces memory pressure for large datasets (30k+ rows).
+    group_order_w = Window.partitionBy("final_group", "location", "language").orderBy(F.asc("query"))
 
     chunked_df = (
-        exploded_df
-        .withColumn("chunk_id", (F.col("pos") / F.lit(batch_size)).cast("int"))
+        with_groups_df
+        .withColumn("row_idx", F.row_number().over(group_order_w) - F.lit(1))
+        .withColumn("chunk_id", (F.col("row_idx") / F.lit(batch_size)).cast("int"))
         .groupBy("final_group", "location", "language", "chunk_id")
         .agg(
-            F.collect_list("term").alias("queries"),
+            F.collect_list("query").alias("queries"),
             F.count("*").alias("chunk_size"),
         )
     )
 
-    # Spark-native cumulative packing per locale (faster and more scalable than applyInPandas).
-    # With chunk_size <= batch_size, floor((running_size - 1) / batch_size) guarantees
-    # every output batch has size <= batch_size.
-    order_w = Window.partitionBy("location", "language").orderBy(
-        F.desc("chunk_size"), F.asc("final_group"), F.asc("chunk_id")
-    )
+    # applyInPandas requires an explicit output schema.
+    assign_schema = StructType([
+        StructField("location", chunked_df.schema["location"].dataType, False),
+        StructField("language", chunked_df.schema["language"].dataType, False),
+        StructField("final_group", chunked_df.schema["final_group"].dataType, False),
+        StructField("chunk_id", IntegerType(), False),
+        StructField("queries", chunked_df.schema["queries"].dataType, False),
+        StructField("chunk_size", IntegerType(), False),
+        StructField("batch_id", IntegerType(), False),
+    ])
+
+    def _pack_partition(pdf: pd.DataFrame) -> pd.DataFrame:
+        pdf = pdf.sort_values(["chunk_size", "final_group", "chunk_id"], ascending=[False, True, True]).reset_index(drop=True)
+        pdf["batch_id"] = _assign_batch_ids(pdf["chunk_size"].tolist(), batch_size)
+        pdf["chunk_id"] = pdf["chunk_id"].astype(int)
+        pdf["chunk_size"] = pdf["chunk_size"].astype(int)
+        pdf["batch_id"] = pdf["batch_id"].astype(int)
+        return pdf[["location", "language", "final_group", "chunk_id", "queries", "chunk_size", "batch_id"]]
 
     packed_df = (
         chunked_df
         .repartition("location", "language")
-        .withColumn(
-            "running_size",
-            F.sum("chunk_size").over(
-                order_w.rowsBetween(Window.unboundedPreceding, Window.currentRow)
-            ),
-        )
-        .withColumn("batch_id", ((F.col("running_size") - F.lit(1)) / F.lit(batch_size)).cast("int"))
+        .groupBy("location", "language")
+        .applyInPandas(_pack_partition, schema=assign_schema)
     )
 
     return (
