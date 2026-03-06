@@ -146,46 +146,43 @@ def build_with_groups_df(input_df, model, lsh_model, threshold):
 
 
 def build_query_batches(with_groups_df, batch_size=5):
-    """Build query batches while preserving similarity groups and strictly enforcing max batch size."""
+    """
+    Build query batches with a scale-first strategy.
 
-    # Fast path: avoid collect_list -> posexplode roundtrip by assigning chunk_id directly.
-    # This keeps the plan Spark-native and reduces memory overhead for large datasets.
+    Strategy:
+    - keep similarity groups intact by default,
+    - split only oversized groups into chunks of size <= batch_size,
+    - emit each chunk as its own batch row.
+
+    This avoids expensive global packing/sorting across all groups and scales better
+    when a project has a single `(location, language)` with very large row counts.
+    """
+
+    # Assign per-group row index so large groups can be sliced into fixed-size chunks.
     group_order_w = Window.partitionBy("final_group", "location", "language").orderBy(F.asc("query"))
 
-    chunked_df = (
+    chunked_rows_df = (
         with_groups_df
         .withColumn("row_idx", F.row_number().over(group_order_w) - F.lit(1))
         .withColumn("chunk_id", (F.col("row_idx") / F.lit(batch_size)).cast("int"))
+    )
+
+    # Each (final_group, chunk_id, location, language) becomes one batch candidate.
+    chunked_df = (
+        chunked_rows_df
         .groupBy("final_group", "location", "language", "chunk_id")
         .agg(
-            F.collect_list("query").alias("queries"),
+            F.collect_list("query").alias("query"),
             F.count("*").alias("chunk_size"),
         )
     )
 
-    # Spark-native cumulative packing per locale (no applyInPandas).
-    # Since each chunk_size <= batch_size, interval-based batch ids from running sum
-    # guarantee each output batch does not exceed batch_size.
-    order_w = Window.partitionBy("location", "language").orderBy(
-        F.desc("chunk_size"), F.asc("final_group"), F.asc("chunk_id")
-    )
-
-    packed_df = (
-        chunked_df
-        .repartition("location", "language")
-        .withColumn(
-            "running_size",
-            F.sum("chunk_size").over(
-                order_w.rowsBetween(Window.unboundedPreceding, Window.currentRow)
-            ),
-        )
-        .withColumn("batch_id", ((F.col("running_size") - F.lit(1)) / F.lit(batch_size)).cast("int"))
-    )
+    # Deterministic batch numbering over chunk-level rows (much smaller than raw input rows).
+    batch_w = Window.partitionBy("location", "language").orderBy(F.asc("final_group"), F.asc("chunk_id"))
 
     return (
-        packed_df
-        .groupBy("batch_id", "location", "language")
-        .agg(F.flatten(F.collect_list("queries")).alias("query"))
+        chunked_df
+        .withColumn("batch_id", F.row_number().over(batch_w) - F.lit(1))
         .orderBy("location", "language", "batch_id")
         .select("query", "location", "language")
     )
