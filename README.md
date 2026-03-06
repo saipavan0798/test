@@ -63,7 +63,7 @@ Output columns:
 Behavior:
 - keeps similarity groups together,
 - splits only groups larger than `batch_size`,
-- packs chunks per `location` + `language` using strict greedy chunk packing.
+- packs chunks per `location` + `language` using Spark-native cumulative packing (no applyInPandas), which scales better for large datasets.
 - never exceeds `batch_size` in any output row.
 
 ## Demo notebook
@@ -80,3 +80,8 @@ ordered_with_groups_df = order_with_groups_df(with_groups_df)
 # columns include: query, location, language, final_group, match_count
 # order: match_count desc, final_group asc, query asc
 ```
+
+
+## Performance note
+
+For large inputs (30k to 100k+ rows), the batching step is implemented with Spark SQL/window operations to avoid Python/Pandas partition overhead.
